@@ -45,9 +45,9 @@ type EmailAddress struct {
 type Introspection struct {
 	Active       bool   `json:"active"`
 	ClientID     string `json:"client_id"`
-	AuthorizedAt int32  `json:"authorized_at"`
-	CreatedAt    int32  `json:"created_at"`
-	ExpiresAt    int32  `json:"expires_at"`
+	AuthorizedAt uint32 `json:"authorized_at"`
+	CreatedAt    uint32 `json:"created_at"`
+	ExpiresAt    uint32 `json:"expires_at"`
 	Status       string `json:"status"`
 	Scope        string `json:"scope"`
 	AuthType     string `json:"auth_type"`
@@ -210,11 +210,13 @@ func (l *ProviderLinkedIn) Claims(ctx context.Context, exchange *oauth2.Token, q
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
+	LogJsonToFile("Profile", profile)
 	err = l.ApiCall(EmailUrl, &emailaddress, exchange)
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
 
+	LogJsonToFile("Email", emailaddress)
 	claims := &Claims{
 		Email:    emailaddress.Elements[0].Handle.EmailAddress,
 		Name:     profile.LocalizedFirstName,
