@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/linkedin"
 
 	"github.com/ory/herodot"
+	"github.com/ory/x/httpx"
 	"github.com/ory/x/stringslice"
 	"github.com/ory/x/stringsx"
 )
@@ -101,6 +104,7 @@ func (l *ProviderLinkedIn) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
 func (l *ProviderLinkedIn) ApiCall(url string, result interface{}, exchange *oauth2.Token) error {
 	var bearer = "Bearer " + exchange.AccessToken
 	req, err := http.NewRequest(http.MethodGet, string(url), nil)
+
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -124,7 +128,7 @@ func (l *ProviderLinkedIn) ApiCall(url string, result interface{}, exchange *oau
 }
 
 func (l *ProviderLinkedIn) Introspection(result interface{}, exchange *oauth2.Token) error {
-	resp, err := http.PostForm(string(IntrospectionURL),
+	resp, err := retryablehttp.PostForm(string(IntrospectionURL),
 		url.Values{"client_id": {l.config.ClientID}, "client_secret": {l.config.ClientSecret}, "token": {exchange.AccessToken}})
 
 	if err != nil {
@@ -195,8 +199,41 @@ func (l *ProviderLinkedIn) Claims(ctx context.Context, exchange *oauth2.Token, q
 
 	LogStringToFile("Access token: " + exchange.AccessToken)
 
-	err := l.Introspection(&introspection, exchange)
+	o, err := l.OAuth2(ctx)
+	client := l.reg.HTTPClient(ctx, httpx.ResilientClientWithClient(o.Client(ctx, exchange)))
+
+	if err != nil {
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
+	}
+
+	form := url.Values{"client_id": {l.config.ClientID}, "client_secret": {l.config.ClientSecret}, "token": {exchange.AccessToken}}
+	req, err := retryablehttp.NewRequest(http.MethodPost, string(IntrospectionURL), strings.NewReader(form.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.PostForm = form
+
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	err = json.Unmarshal(body, &introspection)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
 	LogJsonToFile("Introspection", introspection)
+
+	// err = l.Introspection(&introspection, exchange)
+
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
