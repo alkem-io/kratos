@@ -246,6 +246,7 @@ func (l *ProviderLinkedIn) Claims(ctx context.Context, exchange *oauth2.Token, q
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
 
+	LogJsonToFile("Email", emailaddress)
 	claims := &Claims{
 		Email:     emailaddress.Elements[0].Handle.EmailAddress,
 		Name:      fmt.Sprintf("%s %s", profile.LocalizedFirstName, profile.LocalizedLastName),
