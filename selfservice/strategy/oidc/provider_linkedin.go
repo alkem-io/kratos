@@ -3,7 +3,7 @@ package oidc
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -101,51 +101,63 @@ func (l *ProviderLinkedIn) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
 	return []oauth2.AuthCodeOption{}
 }
 
-func (l *ProviderLinkedIn) ApiCall(url string, result interface{}, exchange *oauth2.Token) error {
-	var bearer = "Bearer " + exchange.AccessToken
-	req, err := http.NewRequest(http.MethodGet, string(url), nil)
-
+func (l *ProviderLinkedIn) ApiGetCall(client *retryablehttp.Client, url string, result interface{}) error {
+	req, err := retryablehttp.NewRequest(http.MethodGet, string(url), nil)
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	req.Header.Add("Authorization", bearer)
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	err = json.Unmarshal(body, result)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
 		return errors.WithStack(err)
 	}
 
 	return nil
 }
 
-func (l *ProviderLinkedIn) Introspection(result interface{}, exchange *oauth2.Token) error {
-	resp, err := retryablehttp.PostForm(string(IntrospectionURL),
-		url.Values{"client_id": {l.config.ClientID}, "client_secret": {l.config.ClientSecret}, "token": {exchange.AccessToken}})
-
+func (l *ProviderLinkedIn) Introspection(client *retryablehttp.Client, result interface{}, exchange *oauth2.Token) error {
+	form := url.Values{"client_id": {l.config.ClientID}, "client_secret": {l.config.ClientSecret}, "token": {exchange.AccessToken}}
+	req, err := retryablehttp.NewRequest(http.MethodPost, string(IntrospectionURL), strings.NewReader(form.Encode()))
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.PostForm = form
+	resp, err := client.Do(req)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	err = json.Unmarshal(body, result)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
 		return errors.WithStack(err)
 	}
 
 	return nil
+}
+
+func (l *ProviderLinkedIn) Profile(client *retryablehttp.Client) (*Profile, error) {
+	var profile Profile
+
+	if err := l.ApiGetCall(client, ProfileUrl, &profile); err != nil {
+		LogJsonToFile("Profile", profile)
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
+	}
+	return &profile, nil
+}
+
+func (l *ProviderLinkedIn) Email(client *retryablehttp.Client) (*EmailAddress, error) {
+	var emailaddress EmailAddress
+
+	if err := l.ApiGetCall(client, EmailUrl, &emailaddress); err != nil {
+		LogJsonToFile("Email", emailaddress)
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
+	}
+
+	return &emailaddress, nil
 }
 
 func RedirectPost(req *http.Request, via []*http.Request) error {
@@ -191,11 +203,27 @@ func LogJsonToFile(objectName string, jsonObject interface{}) {
 	LogStringToFile(objectName + ": " + string(introspectionJson))
 }
 
+func (l *ProviderLinkedIn) VerifyScopes(client *retryablehttp.Client, exchange *oauth2.Token) error {
+	var introspection Introspection
+
+	if err := l.Introspection(client, &introspection, exchange); err != nil {
+		LogJsonToFile("Introspection", introspection)
+		return errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
+	}
+	grantedScopes := stringsx.Splitx(introspection.Scope, ",")
+	for _, check := range l.Config().Scope {
+		if !stringslice.Has(grantedScopes, check) {
+			return errors.WithStack(ErrScopeMissing)
+		}
+	}
+
+	return nil
+}
+
 func (l *ProviderLinkedIn) Claims(ctx context.Context, exchange *oauth2.Token, query url.Values) (*Claims, error) {
 
-	var introspection Introspection
-	var profile Profile
-	var emailaddress EmailAddress
+	var profile *Profile
+	var emailaddress *EmailAddress
 
 	LogJsonToFile("Exchange", exchange)
 	LogStringToFile("Access token: " + exchange.AccessToken)
@@ -206,76 +234,24 @@ func (l *ProviderLinkedIn) Claims(ctx context.Context, exchange *oauth2.Token, q
 	}
 
 	client := l.reg.HTTPClient(ctx, httpx.ResilientClientWithClient(o.Client(ctx, exchange)))
+	if err = l.VerifyScopes(client, exchange); err != nil {
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
+	}
+	profile, err = l.Profile(client)
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
-	form := url.Values{"client_id": {l.config.ClientID}, "client_secret": {l.config.ClientSecret}, "token": {exchange.AccessToken}}
-	req, err := retryablehttp.NewRequest(http.MethodPost, string(IntrospectionURL), strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	req.PostForm = form
-	resp, err := client.Do(req)
+	emailaddress, err = l.Email(client)
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	err = json.Unmarshal(body, &introspection)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	LogJsonToFile("Introspection", introspection)
-
-	defer resp.Body.Close()
-	// err = l.Introspection(&introspection, exchange)
-
-	if err != nil {
-		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	}
-	grantedScopes := stringsx.Splitx(introspection.Scope, ",")
-	for _, check := range l.Config().Scope {
-		if !stringslice.Has(grantedScopes, check) {
-			return nil, errors.WithStack(ErrScopeMissing)
-		}
-	}
-	// err = l.ApiCall(ProfileUrl, &profile, exchange)
-
-	req, err = retryablehttp.NewRequest(http.MethodGet, string(ProfileUrl), nil)
-	resp, err = client.Do(req)
-	if err != nil {
-		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	}
-
-	LogJsonToFile("Profile", profile)
-	// err = l.ApiCall(EmailUrl, &emailaddress, exchange)
-	// if err != nil {
-	// 	return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	// }
-
-	req, err = retryablehttp.NewRequest(http.MethodGet, string(EmailUrl), nil)
-	resp, err = client.Do(req)
-	if err != nil {
-		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&emailaddress); err != nil {
-		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	}
-
-	LogJsonToFile("Email", emailaddress)
 	claims := &Claims{
-		Email:    emailaddress.Elements[0].Handle.EmailAddress,
-		Name:     profile.LocalizedFirstName,
-		LastName: profile.LocalizedLastName,
-		Picture:  profile.ProfilePicture.DisplayImage.Elements[1].Identifiers[0].Identifier,
+		Email:     emailaddress.Elements[0].Handle.EmailAddress,
+		Name:      fmt.Sprintf("%s %s", profile.LocalizedFirstName, profile.LocalizedLastName),
+		GivenName: profile.LocalizedFirstName,
+		LastName:  profile.LocalizedLastName,
+		Picture:   profile.ProfilePicture.DisplayImage.Elements[1].Identifiers[0].Identifier,
 	}
 
 	LogJsonToFile("Claims", claims)

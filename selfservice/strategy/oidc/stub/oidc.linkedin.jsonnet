@@ -11,7 +11,7 @@ local claims =
       picture: claims.picture,
       name:
       {
-        first: claims.name,
+        first: claims.first_name,
         last: claims.last_name,
       }
     },
