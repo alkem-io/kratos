@@ -20,7 +20,7 @@ import (
 
 type ProviderPatreon struct {
 	config *Configuration
-	reg    dependencies
+	reg    Dependencies
 }
 
 type PatreonIdentityResponse struct {
@@ -39,8 +39,8 @@ type PatreonIdentityResponse struct {
 
 func NewProviderPatreon(
 	config *Configuration,
-	reg dependencies,
-) *ProviderPatreon {
+	reg Dependencies,
+) Provider {
 	return &ProviderPatreon{
 		config: config,
 		reg:    reg,
@@ -96,8 +96,12 @@ func (d *ProviderPatreon) Claims(ctx context.Context, exchange *oauth2.Token, qu
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
-
 	defer res.Body.Close()
+
+	if err := logUpstreamError(d.reg.Logger(), res); err != nil {
+		return nil, err
+	}
+
 	data := PatreonIdentityResponse{}
 	jsonErr := json.NewDecoder(res.Body).Decode(&data)
 	if jsonErr != nil {

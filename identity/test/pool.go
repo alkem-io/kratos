@@ -6,44 +6,37 @@ package test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ory/x/randx"
+	"github.com/ory/x/crdbx"
 
-	"github.com/tidwall/gjson"
-
-	"github.com/ory/x/assertx"
-
-	"github.com/ory/kratos/internal/testhelpers"
-
-	"github.com/ory/kratos/identity"
-	"github.com/ory/kratos/persistence"
-
-	"github.com/bxcodec/faker/v3"
-
-	"github.com/ory/x/sqlxx"
-
-	"github.com/ory/x/errorsx"
-	"github.com/ory/x/sqlcon"
-	"github.com/ory/x/urlx"
-
-	"github.com/ory/kratos/schema"
-
+	"github.com/go-faker/faker/v4"
 	"github.com/gofrs/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/ory/kratos/driver/config"
+	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/internal/testhelpers"
+	"github.com/ory/kratos/persistence"
+	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/x"
+	"github.com/ory/x/assertx"
+	"github.com/ory/x/errorsx"
+	"github.com/ory/x/pagination/keysetpagination"
+	"github.com/ory/x/randx"
+	"github.com/ory/x/sqlcon"
+	"github.com/ory/x/sqlxx"
+	"github.com/ory/x/urlx"
 )
 
-func TestPool(ctx context.Context, conf *config.Config, p interface {
-	persistence.Persister
-}, m *identity.Manager) func(t *testing.T) {
+func TestPool(ctx context.Context, conf *config.Config, p persistence.Persister, m *identity.Manager, dbname string) func(t *testing.T) {
 	return func(t *testing.T) {
 		exampleServerURL := urlx.ParseOrPanic("http://example.com")
 		conf.MustSet(ctx, config.ViperKeyPublicBaseURL, exampleServerURL.String())
@@ -64,6 +57,11 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			URL:    urlx.ParseOrPanic("file://./stub/identity-2.schema.json"),
 			RawURL: "file://./stub/identity-2.schema.json",
 		}
+		multipleEmailsSchema := schema.Schema{
+			ID:     "multiple_emails",
+			URL:    urlx.ParseOrPanic("file://./stub/handler/multiple_emails.schema.json"),
+			RawURL: "file://./stub/identity-2.schema.json",
+		}
 		conf.MustSet(ctx, config.ViperKeyIdentitySchemas, []config.Schema{
 			{
 				ID:  altSchema.ID,
@@ -77,10 +75,13 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 				ID:  expandSchema.ID,
 				URL: expandSchema.RawURL,
 			},
+			{
+				ID:  multipleEmailsSchema.ID,
+				URL: multipleEmailsSchema.RawURL,
+			},
 		})
 
 		t.Run("case=expand", func(t *testing.T) {
-
 			require.NoError(t, p.GetConnection(ctx).RawQuery("DELETE FROM identities WHERE nid = ?", nid).Exec())
 			t.Cleanup(func() {
 				require.NoError(t, p.GetConnection(ctx).RawQuery("DELETE FROM identities WHERE nid = ?", nid).Exec())
@@ -112,10 +113,18 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 					assertion(t, actual)
 				})
 
-				t.Run("list", func(t *testing.T) {
-					actual, err := p.ListIdentities(ctx, expand, 0, 10)
+				t.Run("list/page-pagination", func(t *testing.T) {
+					actual, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{Expand: expand, PagePagination: &x.Page{Page: 0, ItemsPerPage: 10}})
 					require.NoError(t, err)
 					require.Len(t, actual, 1)
+					assertion(t, &actual[0])
+				})
+
+				t.Run("list/token-pagination", func(t *testing.T) {
+					actual, next, err := p.ListIdentities(ctx, identity.ListIdentityParameters{Expand: expand, KeySetPagination: []keysetpagination.Option{keysetpagination.WithSize(10)}})
+					require.NoError(t, err)
+					require.Len(t, actual, 1)
+					require.True(t, next.IsLast())
 					assertion(t, &actual[0])
 				})
 			}
@@ -125,7 +134,6 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 					assert.Empty(t, actual.RecoveryAddresses)
 					assert.Empty(t, actual.VerifiableAddresses)
 					assert.Empty(t, actual.Credentials)
-					assert.Empty(t, actual.InternalCredentials)
 				})
 			})
 
@@ -134,7 +142,6 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 					assert.Empty(t, actual.RecoveryAddresses)
 					assert.Empty(t, actual.VerifiableAddresses)
 
-					require.Len(t, actual.InternalCredentials, 2)
 					require.Len(t, actual.Credentials, 2)
 
 					assertx.EqualAsJSONExcept(t, expected.Credentials[identity.CredentialsTypePassword], actual.Credentials[identity.CredentialsTypePassword], []string{"updated_at", "created_at"})
@@ -145,7 +152,6 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			t.Run("expand=recovery address", func(t *testing.T) {
 				runner(t, sqlxx.Expandables{identity.ExpandFieldRecoveryAddresses}, func(t *testing.T, actual *identity.Identity) {
 					assert.Empty(t, actual.Credentials)
-					assert.Empty(t, actual.InternalCredentials)
 					assert.Empty(t, actual.VerifiableAddresses)
 
 					require.Len(t, actual.RecoveryAddresses, 1)
@@ -156,7 +162,6 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			t.Run("expand=verification address", func(t *testing.T) {
 				runner(t, sqlxx.Expandables{identity.ExpandFieldVerifiableAddresses}, func(t *testing.T, actual *identity.Identity) {
 					assert.Empty(t, actual.Credentials)
-					assert.Empty(t, actual.InternalCredentials)
 					assert.Empty(t, actual.RecoveryAddresses)
 
 					require.Len(t, actual.VerifiableAddresses, 1)
@@ -166,9 +171,7 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 
 			t.Run("expand=default", func(t *testing.T) {
 				runner(t, identity.ExpandDefault, func(t *testing.T, actual *identity.Identity) {
-
 					assert.Empty(t, actual.Credentials)
-					assert.Empty(t, actual.InternalCredentials)
 
 					require.Len(t, actual.RecoveryAddresses, 1)
 					assertx.EqualAsJSONExcept(t, expected.RecoveryAddresses, actual.RecoveryAddresses, []string{"0.updated_at", "0.created_at"})
@@ -180,8 +183,6 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 
 			t.Run("expand=everything", func(t *testing.T) {
 				runner(t, identity.ExpandEverything, func(t *testing.T, actual *identity.Identity) {
-
-					require.Len(t, actual.InternalCredentials, 2)
 					require.Len(t, actual.Credentials, 2)
 
 					assertx.EqualAsJSONExcept(t, expected.Credentials[identity.CredentialsTypePassword], actual.Credentials[identity.CredentialsTypePassword], []string{"updated_at", "created_at"})
@@ -199,7 +200,6 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 				runner(t, identity.ExpandNothing, func(t *testing.T, actual *identity.Identity) {
 					require.NoError(t, p.HydrateIdentityAssociations(ctx, actual, identity.ExpandEverything))
 
-					require.Len(t, actual.InternalCredentials, 2)
 					require.Len(t, actual.Credentials, 2)
 
 					assertx.EqualAsJSONExcept(t, expected.Credentials[identity.CredentialsTypePassword], actual.Credentials[identity.CredentialsTypePassword], []string{"updated_at", "created_at"})
@@ -212,10 +212,29 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 					assertx.EqualAsJSONExcept(t, expected.VerifiableAddresses, actual.VerifiableAddresses, []string{"0.updated_at", "0.created_at"})
 				})
 			})
+
+			t.Run("confidential", func(t *testing.T) {
+				// confidential is like expand=all
+				actual, err := p.GetIdentityConfidential(ctx, expected.ID)
+				require.NoError(t, err)
+				assertx.EqualAsJSONExcept(t, expected, actual, []string{
+					"verifiable_addresses", "recovery_addresses", "updated_at", "created_at", "credentials", "state_changed_at",
+				})
+				require.Len(t, actual.Credentials, 2)
+
+				assertx.EqualAsJSONExcept(t, expected.Credentials[identity.CredentialsTypePassword], actual.Credentials[identity.CredentialsTypePassword], []string{"updated_at", "created_at"})
+				assertx.EqualAsJSONExcept(t, expected.Credentials[identity.CredentialsTypeWebAuthn], actual.Credentials[identity.CredentialsTypeWebAuthn], []string{"updated_at", "created_at"})
+
+				require.Len(t, actual.RecoveryAddresses, 1)
+				assertx.EqualAsJSONExcept(t, expected.RecoveryAddresses, actual.RecoveryAddresses, []string{"0.updated_at", "0.created_at"})
+
+				require.Len(t, actual.VerifiableAddresses, 1)
+				assertx.EqualAsJSONExcept(t, expected.VerifiableAddresses, actual.VerifiableAddresses, []string{"0.updated_at", "0.created_at"})
+			})
 		})
 
 		var createdIDs []uuid.UUID
-		var passwordIdentity = func(schemaID string, credentialsID string) *identity.Identity {
+		passwordIdentity := func(schemaID string, credentialsID string) *identity.Identity {
 			i := identity.NewIdentity(schemaID)
 			i.SetCredentials(identity.CredentialsTypePassword, identity.Credentials{
 				Type: identity.CredentialsTypePassword, Identifiers: []string{credentialsID},
@@ -224,7 +243,7 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			return i
 		}
 
-		var webAuthnIdentity = func(schemaID string, credentialsID string) *identity.Identity {
+		webAuthnIdentity := func(schemaID string, credentialsID string) *identity.Identity {
 			i := identity.NewIdentity(schemaID)
 			i.SetCredentials(identity.CredentialsTypeWebAuthn, identity.Credentials{
 				Type: identity.CredentialsTypeWebAuthn, Identifiers: []string{credentialsID},
@@ -233,7 +252,7 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			return i
 		}
 
-		var oidcIdentity = func(schemaID string, credentialsID string) *identity.Identity {
+		oidcIdentity := func(schemaID string, credentialsID string) *identity.Identity {
 			i := identity.NewIdentity(schemaID)
 			i.SetCredentials(identity.CredentialsTypeOIDC, identity.Credentials{
 				Type: identity.CredentialsTypeOIDC, Identifiers: []string{credentialsID},
@@ -242,7 +261,7 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			return i
 		}
 
-		var assertEqual = func(t *testing.T, expected, actual *identity.Identity) {
+		assertEqual := func(t *testing.T, expected, actual *identity.Identity) {
 			assert.Empty(t, actual.Credentials)
 			require.Equal(t, expected.Traits, actual.Traits)
 			require.Equal(t, expected.ID, actual.ID)
@@ -297,6 +316,51 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 				count, err := p.CountIdentities(ctx)
 				require.NoError(t, err)
 				assert.EqualValues(t, int64(0), count)
+			})
+		})
+
+		t.Run("case=create with null AAL", func(t *testing.T) {
+			expected := passwordIdentity("", "id-"+uuid.Must(uuid.NewV4()).String())
+			expected.AvailableAAL.Valid = false
+			require.NoError(t, p.CreateIdentity(ctx, expected))
+			createdIDs = append(createdIDs, expected.ID)
+
+			actual, err := p.GetIdentity(ctx, expected.ID, identity.ExpandDefault)
+			require.NoError(t, err)
+
+			assert.False(t, actual.AvailableAAL.Valid)
+		})
+
+		t.Run("suite=create multiple identities", func(t *testing.T) {
+			t.Run("create multiple identities", func(t *testing.T) {
+				identities := make([]*identity.Identity, 100)
+				for i := range identities {
+					identities[i] = NewTestIdentity(4, "persister-create-multiple", i)
+				}
+				require.NoError(t, p.CreateIdentities(ctx, identities...))
+
+				for _, id := range identities {
+					idFromDB, err := p.GetIdentity(ctx, id.ID, identity.ExpandEverything)
+					require.NoError(t, err)
+
+					credFromDB := idFromDB.Credentials[identity.CredentialsTypePassword]
+					assert.Equal(t, id.ID, idFromDB.ID)
+					assert.Equal(t, id.SchemaID, idFromDB.SchemaID)
+					assert.Equal(t, id.SchemaURL, idFromDB.SchemaURL)
+					assert.Equal(t, id.State, idFromDB.State)
+
+					// We test that the values are plausible in the handler test already.
+					assert.Equal(t, len(id.VerifiableAddresses), len(idFromDB.VerifiableAddresses))
+					assert.Equal(t, len(id.RecoveryAddresses), len(idFromDB.RecoveryAddresses))
+
+					assert.Equal(t, id.Credentials["password"].Identifiers, credFromDB.Identifiers)
+					assert.WithinDuration(t, time.Now().UTC(), credFromDB.CreatedAt, time.Minute)
+					assert.WithinDuration(t, time.Now().UTC(), credFromDB.UpdatedAt, time.Minute)
+					assert.WithinDuration(t, id.CreatedAt, idFromDB.CreatedAt, time.Second)
+					assert.WithinDuration(t, id.UpdatedAt, idFromDB.UpdatedAt, time.Second)
+
+					require.NoError(t, p.DeleteIdentity(ctx, id.ID))
+				}
 			})
 		})
 
@@ -569,9 +633,10 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 		})
 
 		t.Run("case=list", func(t *testing.T) {
-			is, err := p.ListIdentities(ctx, identity.ExpandDefault, 0, 25)
+			is, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{Expand: identity.ExpandDefault})
 			require.NoError(t, err)
-			assert.Len(t, is, len(createdIDs))
+			require.NotEmpty(t, is)
+			require.Len(t, is, len(createdIDs))
 			for _, id := range createdIDs {
 				var found bool
 				for _, i := range is {
@@ -587,13 +652,175 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 
 			t.Run("no results on other network", func(t *testing.T) {
 				_, p := testhelpers.NewNetwork(t, ctx, p)
-				is, err := p.ListIdentities(ctx, identity.ExpandDefault, 0, 25)
+				is, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{Expand: identity.ExpandDefault})
 				require.NoError(t, err)
 				assert.Len(t, is, 0)
+			})
+
+			t.Run("eventually consistent", func(t *testing.T) {
+				if dbname != "cockroach" {
+					t.Skipf("Test only works with cockroachdb")
+					return
+				}
+
+				id := x.NewUUID().String()
+				another := oidcIdentity("", id)
+				require.NoError(t, p.CreateIdentity(ctx, another))
+				createdIDs = append(createdIDs, another.ID)
+
+				is, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+					Expand:           identity.ExpandDefault,
+					KeySetPagination: []keysetpagination.Option{keysetpagination.WithSize(25)},
+					ConsistencyLevel: crdbx.ConsistencyLevelStrong,
+				})
+				require.NoError(t, err)
+				require.Len(t, is, len(createdIDs))
+
+				var results []identity.Identity
+				// It takes about 4.8 seconds to replicate the data.
+				for i := 0; i < 8; i++ {
+					time.Sleep(time.Second)
+
+					// The error here is explicitly ignored because the table / schema might not yet be replicated.
+					// This can lead to "ERROR: cached plan must not change result type (SQLSTATE 0A000)" whih is caused
+					// because the prepared query exist but the schema is not yet replicated.
+					is, _, _ := p.ListIdentities(ctx, identity.ListIdentityParameters{
+						Expand:           identity.ExpandEverything,
+						KeySetPagination: []keysetpagination.Option{keysetpagination.WithSize(25)},
+						ConsistencyLevel: crdbx.ConsistencyLevelEventual,
+					})
+
+					if len(is) == len(createdIDs) {
+						results = is
+					}
+				}
+				require.NotZero(t, len(results))
+				require.Len(t, results, len(createdIDs), "Could not find all identities after 8 seconds")
+
+				var found bool
+				for _, i := range results {
+					if i.ID == another.ID {
+						found = true
+					}
+				}
+				require.True(t, found, id, "Unable to find created identity in eventually consistent results.")
 			})
 		})
 
 		t.Run("case=find identity by its credentials identifier", func(t *testing.T) {
+			var expectedIdentifiers []string
+			var expectedIdentities []*identity.Identity
+
+			for _, c := range []identity.CredentialsType{
+				identity.CredentialsTypePassword,
+				identity.CredentialsTypeWebAuthn,
+				identity.CredentialsTypeOIDC,
+			} {
+				identityIdentifier := fmt.Sprintf("find-identity-by-identifier-%s@ory.sh", c)
+				expected := identity.NewIdentity("")
+				expected.SetCredentials(c, identity.Credentials{Type: c, Identifiers: []string{identityIdentifier}, Config: sqlxx.JSONRawMessage(`{}`)})
+
+				require.NoError(t, p.CreateIdentity(ctx, expected))
+				createdIDs = append(createdIDs, expected.ID)
+				expectedIdentifiers = append(expectedIdentifiers, identityIdentifier)
+				expectedIdentities = append(expectedIdentities, expected)
+			}
+
+			create := identity.NewIdentity("")
+			create.SetCredentials(identity.CredentialsTypePassword, identity.Credentials{Type: identity.CredentialsTypePassword, Identifiers: []string{"find-identity-by-identifier-common@ory.sh"}, Config: sqlxx.JSONRawMessage(`{}`)})
+			create.SetCredentials(identity.CredentialsTypeWebAuthn, identity.Credentials{Type: identity.CredentialsTypeWebAuthn, Identifiers: []string{"find-identity-by-identifier-common@ory.sh"}, Config: sqlxx.JSONRawMessage(`{}`)})
+			require.NoError(t, p.CreateIdentity(ctx, create))
+
+			actual, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+				Expand: identity.ExpandEverything,
+			})
+			require.NoError(t, err)
+			require.Greater(t, len(actual), 0)
+
+			for c, ct := range []identity.CredentialsType{
+				identity.CredentialsTypePassword,
+				identity.CredentialsTypeWebAuthn,
+			} {
+				t.Run(ct.String(), func(t *testing.T) {
+					actual, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+						// Match is normalized
+						CredentialsIdentifier: expectedIdentifiers[c],
+					})
+					require.NoError(t, err)
+
+					expected := expectedIdentities[c]
+					require.Len(t, actual, 1)
+					assertx.EqualAsJSONExcept(t, expected, actual[0], []string{"credentials.config", "created_at", "updated_at", "state_changed_at"})
+				})
+			}
+
+			t.Run("similarity search", func(t *testing.T) {
+				actual, _, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+					CredentialsIdentifierSimilar: "find-identity-by-identifier",
+					Expand:                       identity.ExpandCredentials,
+				})
+				require.NoError(t, err)
+				assert.Len(t, actual, 3)
+
+			outer:
+				for _, e := range append(expectedIdentities[:2], create) {
+					for _, a := range actual {
+						if e.ID == a.ID {
+							assertx.EqualAsJSONExcept(t, e, a, []string{"credentials.config", "created_at", "updated_at", "state_changed_at"})
+							continue outer
+						}
+					}
+					actualCredentials := make([]map[identity.CredentialsType]identity.Credentials, len(actual))
+					for k, a := range actual {
+						actualCredentials[k] = a.Credentials
+					}
+					t.Fatalf("expected identity %+v not found in actual result set %+v", e.Credentials, actualCredentials)
+				}
+			})
+
+			t.Run("only webauthn and password", func(t *testing.T) {
+				actual, next, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+					CredentialsIdentifier: "find-identity-by-identifier-oidc@ory.sh",
+					Expand:                identity.ExpandEverything,
+				})
+				require.NoError(t, err)
+				assert.Len(t, actual, 0)
+				assert.True(t, next.IsLast())
+			})
+
+			t.Run("one result set even if multiple matches", func(t *testing.T) {
+				actual, next, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+					CredentialsIdentifier: "find-identity-by-identifier-common@ory.sh",
+					Expand:                identity.ExpandEverything,
+				})
+				require.NoError(t, err)
+				assert.Len(t, actual, 1)
+				assert.True(t, next.IsLast())
+			})
+
+			t.Run("non existing identifier", func(t *testing.T) {
+				actual, next, err := p.ListIdentities(ctx, identity.ListIdentityParameters{
+					CredentialsIdentifier: "find-identity-by-identifier-non-existing@ory.sh",
+					Expand:                identity.ExpandEverything,
+				})
+				require.NoError(t, err)
+				assert.Len(t, actual, 0)
+				assert.True(t, next.IsLast())
+			})
+
+			t.Run("not if on another network", func(t *testing.T) {
+				_, on := testhelpers.NewNetwork(t, ctx, p)
+				actual, next, err := on.ListIdentities(ctx, identity.ListIdentityParameters{
+					CredentialsIdentifier: expectedIdentifiers[0],
+					Expand:                identity.ExpandEverything,
+				})
+				require.NoError(t, err)
+				assert.Len(t, actual, 0)
+				assert.True(t, next.IsLast())
+			})
+		})
+
+		t.Run("case=find identity by its credentials type and identifier", func(t *testing.T) {
 			expected := passwordIdentity("", "find-credentials-identifier@ory.sh")
 			expected.Traits = identity.Traits(`{}`)
 
@@ -615,6 +842,49 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			t.Run("not if on another network", func(t *testing.T) {
 				_, p := testhelpers.NewNetwork(t, ctx, p)
 				_, _, err := p.FindByCredentialsIdentifier(ctx, identity.CredentialsTypePassword, "find-credentials-identifier@ory.sh")
+				require.ErrorIs(t, err, sqlcon.ErrNoRows)
+			})
+		})
+
+		t.Run("case=find identity only by credentials identifier", func(t *testing.T) {
+			expected := passwordIdentity("", "find-credentials-identifier-only@ory.sh")
+			expected.Traits = identity.Traits(`{}`)
+
+			require.NoError(t, p.CreateIdentity(ctx, expected))
+			createdIDs = append(createdIDs, expected.ID)
+
+			actual, err := p.FindIdentityByCredentialIdentifier(ctx, "find-credentials-IDENTIFIER-only@ory.sh", false)
+			require.NoError(t, err)
+
+			expected.Credentials = nil
+			assertEqual(t, expected, actual)
+
+			t.Run("not if on another network", func(t *testing.T) {
+				_, p := testhelpers.NewNetwork(t, ctx, p)
+				_, err := p.FindIdentityByCredentialIdentifier(ctx, "find-credentials-IDENTIFIER-only@ory.sh", false)
+				require.ErrorIs(t, err, sqlcon.ErrNoRows)
+			})
+		})
+
+		t.Run("case=find identity only by credentials identifier case sensitive", func(t *testing.T) {
+			expected := passwordIdentity("", "find-credentials-identifier-only-ci@ory.sh")
+			expected.Traits = identity.Traits(`{}`)
+
+			require.NoError(t, p.CreateIdentity(ctx, expected))
+			createdIDs = append(createdIDs, expected.ID)
+
+			_, err := p.FindIdentityByCredentialIdentifier(ctx, "find-credentials-IDENTIFIER-only-ci@ory.sh", true)
+			require.ErrorIs(t, err, sqlcon.ErrNoRows)
+
+			actual, err := p.FindIdentityByCredentialIdentifier(ctx, "find-credentials-identifier-only-ci@ory.sh", true)
+			require.NoError(t, err)
+
+			expected.Credentials = nil
+			assertEqual(t, expected, actual)
+
+			t.Run("not if on another network", func(t *testing.T) {
+				_, p := testhelpers.NewNetwork(t, ctx, p)
+				_, err := p.FindIdentityByCredentialIdentifier(ctx, "find-credentials-identifier-only-ci@ory.sh", true)
 				require.ErrorIs(t, err, sqlcon.ErrNoRows)
 			})
 		})
@@ -1023,4 +1293,53 @@ func TestPool(ctx context.Context, conf *config.Config, p interface {
 			assert.Equal(t, "nid1", i.Credentials[m[0].Name].Identifiers[0])
 		})
 	}
+}
+
+func NewTestIdentity(numAddresses int, prefix string, i int) *identity.Identity {
+	var (
+		verifiableAddresses []identity.VerifiableAddress
+		recoveryAddresses   []identity.RecoveryAddress
+	)
+	traits := struct {
+		Emails   []string `json:"emails"`
+		Username string   `json:"username"`
+	}{}
+
+	verificationStates := []identity.VerifiableAddressStatus{
+		identity.VerifiableAddressStatusPending,
+		identity.VerifiableAddressStatusSent,
+		identity.VerifiableAddressStatusCompleted,
+	}
+
+	for j := 0; j < numAddresses; j++ {
+		email := fmt.Sprintf("%s-%d-%d@ory.sh", prefix, i, j)
+		traits.Emails = append(traits.Emails, email)
+		verifiableAddresses = append(verifiableAddresses, identity.VerifiableAddress{
+			Value:    email,
+			Via:      identity.VerifiableAddressTypeEmail,
+			Verified: j%2 == 0,
+			Status:   verificationStates[j%len(verificationStates)],
+		})
+		recoveryAddresses = append(recoveryAddresses, identity.RecoveryAddress{
+			Value: email,
+			Via:   identity.RecoveryAddressTypeEmail,
+		})
+	}
+	traits.Username = traits.Emails[0]
+	rawTraits, _ := json.Marshal(traits)
+
+	id := &identity.Identity{
+		SchemaID:            "multiple_emails",
+		Traits:              rawTraits,
+		VerifiableAddresses: verifiableAddresses,
+		RecoveryAddresses:   recoveryAddresses,
+		State:               "active",
+	}
+	id.SetCredentials(identity.CredentialsTypePassword, identity.Credentials{
+		Type:        identity.CredentialsTypePassword,
+		Identifiers: []string{traits.Username},
+		Config:      sqlxx.JSONRawMessage(`{}`),
+	})
+
+	return id
 }

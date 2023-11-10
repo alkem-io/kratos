@@ -8,6 +8,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/ory/x/contextx"
 	"github.com/ory/x/jsonnetsecure"
 
@@ -33,11 +35,11 @@ func init() {
 	})
 }
 
-func NewConfigurationWithDefaults(t *testing.T) *config.Config {
+func NewConfigurationWithDefaults(t testing.TB) *config.Config {
 	c := config.MustNew(t, logrusx.New("", ""),
 		os.Stderr,
 		configx.WithValues(map[string]interface{}{
-			"log.level":                                      "trace",
+			"log.level":                                      "error",
 			config.ViperKeyDSN:                               dbal.NewSQLiteTestDatabase(t),
 			config.ViperKeyHasherArgon2ConfigMemory:          16384,
 			config.ViperKeyHasherArgon2ConfigIterations:      1,
@@ -73,15 +75,14 @@ func NewFastRegistryWithMocks(t *testing.T) (*config.Config, *driver.RegistryDef
 }
 
 // NewRegistryDefaultWithDSN returns a more standard registry without mocks. Good for e2e and advanced integration testing!
-func NewRegistryDefaultWithDSN(t *testing.T, dsn string) (*config.Config, *driver.RegistryDefault) {
+func NewRegistryDefaultWithDSN(t testing.TB, dsn string) (*config.Config, *driver.RegistryDefault) {
 	ctx := context.Background()
 	c := NewConfigurationWithDefaults(t)
 	c.MustSet(ctx, config.ViperKeyDSN, stringsx.Coalesce(dsn, dbal.NewSQLiteTestDatabase(t)))
-
-	reg, err := driver.NewRegistryFromDSN(ctx, c, logrusx.New("", ""))
+	reg, err := driver.NewRegistryFromDSN(ctx, c, logrusx.New("", "", logrusx.ForceLevel(logrus.ErrorLevel)))
 	require.NoError(t, err)
 	reg.Config().MustSet(ctx, "dev", true)
-	require.NoError(t, reg.Init(context.Background(), &contextx.Default{}, driver.SkipNetworkInit))
+	require.NoError(t, reg.Init(context.Background(), &contextx.Default{}, driver.SkipNetworkInit, driver.WithDisabledMigrationLogging()))
 	require.NoError(t, reg.Persister().MigrateUp(context.Background())) // always migrate up
 
 	actual, err := reg.Persister().DetermineNetwork(context.Background())
@@ -92,5 +93,12 @@ func NewRegistryDefaultWithDSN(t *testing.T, dsn string) (*config.Config, *drive
 	require.NotEqual(t, uuid.Nil, reg.Persister().NetworkID(context.Background()))
 	reg.Persister()
 
+	return c, reg.(*driver.RegistryDefault)
+}
+
+func NewVeryFastRegistryWithoutDB(t *testing.T) (*config.Config, *driver.RegistryDefault) {
+	c := NewConfigurationWithDefaults(t)
+	reg, err := driver.NewRegistryFromDSN(context.Background(), c, logrusx.New("", ""))
+	require.NoError(t, err)
 	return c, reg.(*driver.RegistryDefault)
 }

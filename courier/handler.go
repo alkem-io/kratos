@@ -19,9 +19,11 @@ import (
 	"github.com/ory/kratos/x"
 )
 
-const AdminRouteCourier = "/courier"
-const AdminRouteListMessages = AdminRouteCourier + "/messages"
-const AdminRouteGetMessage = AdminRouteCourier + "/messages/:msgID"
+const (
+	AdminRouteCourier      = "/courier"
+	AdminRouteListMessages = AdminRouteCourier + "/messages"
+	AdminRouteGetMessage   = AdminRouteCourier + "/messages/:msgID"
+)
 
 type (
 	handlerDependencies interface {
@@ -57,7 +59,9 @@ func (h *Handler) RegisterAdminRoutes(admin *x.RouterAdmin) {
 // Paginated Courier Message List Response
 //
 // swagger:response listCourierMessages
-// nolint:deadcode,unused
+//
+//nolint:deadcode,unused
+//lint:ignore U1000 Used to generate Swagger and OpenAPI definitions
 type listCourierMessagesResponse struct {
 	migrationpagination.ResponseHeaderAnnotation
 
@@ -126,7 +130,8 @@ func (h *Handler) listCourierMessages(w http.ResponseWriter, r *http.Request, _ 
 	}
 
 	w.Header().Set("X-Total-Count", fmt.Sprint(tc))
-	keysetpagination.Header(w, r.URL, nextPage)
+	u := *r.URL
+	keysetpagination.Header(w, &u, nextPage)
 	h.r.Writer().Write(w, r, l)
 }
 
@@ -135,7 +140,6 @@ func parseMessagesFilter(r *http.Request) (ListCourierMessagesParameters, []keys
 
 	if r.URL.Query().Has("status") {
 		ms, err := ToMessageStatus(r.URL.Query().Get("status"))
-
 		if err != nil {
 			return ListCourierMessagesParameters{}, nil, err
 		}
@@ -157,7 +161,9 @@ func parseMessagesFilter(r *http.Request) (ListCourierMessagesParameters, []keys
 // Get Courier Message Parameters
 //
 // swagger:parameters getCourierMessage
-// nolint:deadcode,unused
+//
+//nolint:deadcode,unused
+//lint:ignore U1000 Used to generate Swagger and OpenAPI definitions
 type getCourierMessage struct {
 	// MessageID is the ID of the message.
 	//
@@ -186,7 +192,6 @@ type getCourierMessage struct {
 //		default: errorGeneric
 func (h *Handler) getCourierMessage(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	msgID, err := uuid.FromString(ps.ByName("msgID"))
-
 	if err != nil {
 		h.r.Writer().WriteError(w, r, herodot.ErrBadRequest.WithError(err.Error()).WithDebugf("could not parse parameter {id} as UUID, got %s", ps.ByName("id")))
 		return

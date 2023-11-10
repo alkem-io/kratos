@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -16,13 +17,15 @@ import (
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hydra"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/flow"
+	"github.com/ory/kratos/selfservice/sessiontokenexchange"
 	"github.com/ory/kratos/session"
 	"github.com/ory/kratos/ui/container"
 	"github.com/ory/kratos/ui/node"
 	"github.com/ory/kratos/x"
-	"github.com/ory/x/httpx"
-	"github.com/ory/x/otelx/semconv"
+	"github.com/ory/kratos/x/events"
+	"github.com/ory/x/otelx"
 )
 
 type (
@@ -43,14 +46,19 @@ type (
 type (
 	executorDependencies interface {
 		config.Provider
-		hydra.HydraProvider
+		hydra.Provider
+		identity.PrivilegedPoolProvider
 		session.ManagementProvider
 		session.PersistenceProvider
 		x.CSRFTokenGeneratorProvider
 		x.WriterProvider
 		x.LoggingProvider
+		x.TracingProvider
+		sessiontokenexchange.PersistenceProvider
 
+		FlowPersistenceProvider
 		HooksProvider
+		StrategyProvider
 	}
 	HookExecutor struct {
 		d executorDependencies
@@ -110,25 +118,49 @@ func (e *HookExecutor) handleLoginError(_ http.ResponseWriter, r *http.Request, 
 	return flowError
 }
 
-func (e *HookExecutor) PostLoginHook(w http.ResponseWriter, r *http.Request, g node.UiNodeGroup, a *Flow, i *identity.Identity, s *session.Session) error {
+func (e *HookExecutor) PostLoginHook(
+	w http.ResponseWriter,
+	r *http.Request,
+	g node.UiNodeGroup,
+	a *Flow,
+	i *identity.Identity,
+	s *session.Session,
+	provider string,
+) (err error) {
+	ctx := r.Context()
+	ctx, span := e.d.Tracer(ctx).Tracer().Start(ctx, "HookExecutor.PostLoginHook")
+	r = r.WithContext(ctx)
+	defer otelx.End(span, &err)
+
+	if err := e.maybeLinkCredentials(r.Context(), s, i, a); err != nil {
+		return err
+	}
+
 	if err := s.Activate(r, i, e.d.Config(), time.Now().UTC()); err != nil {
 		return err
 	}
 
-	// Verify the redirect URL before we do any other processing.
 	c := e.d.Config()
-	returnTo, err := x.SecureRedirectTo(r, c.SelfServiceBrowserDefaultReturnTo(r.Context()),
+	// Verify the redirect URL before we do any other processing.
+	returnTo, err := x.SecureRedirectTo(r,
+		c.SelfServiceBrowserDefaultReturnTo(r.Context()),
 		x.SecureRedirectReturnTo(a.ReturnTo),
 		x.SecureRedirectUseSourceURL(a.RequestURL),
 		x.SecureRedirectAllowURLs(c.SelfServiceBrowserAllowedReturnToDomains(r.Context())),
 		x.SecureRedirectAllowSelfServiceURLs(c.SelfPublicURL(r.Context())),
-		x.SecureRedirectOverrideDefaultReturnTo(e.d.Config().SelfServiceFlowLoginReturnTo(r.Context(), a.Active.String())),
+		x.SecureRedirectOverrideDefaultReturnTo(c.SelfServiceFlowLoginReturnTo(r.Context(), a.Active.String())),
 	)
 	if err != nil {
 		return err
 	}
+	span.SetAttributes(otelx.StringAttrs(map[string]string{
+		"return_to":       returnTo.String(),
+		"flow_type":       string(flow.TypeBrowser),
+		"redirect_reason": "login successful",
+	})...)
 
-	s = s.Declassify()
+	classified := s
+	s = s.Declassified()
 
 	e.d.Logger().
 		WithRequest(r).
@@ -146,6 +178,9 @@ func (e *HookExecutor) PostLoginHook(w http.ResponseWriter, r *http.Request, g n
 					WithField("identity_id", i.ID).
 					WithField("flow_method", a.Active).
 					Debug("A ExecuteLoginPostHook hook aborted early.")
+
+				span.SetAttributes(attribute.String("redirect_reason", "aborted by hook"), attribute.String("executor", fmt.Sprintf("%T", executor)))
+
 				return nil
 			}
 			return e.handleLoginError(w, r, g, a, i, err)
@@ -162,6 +197,7 @@ func (e *HookExecutor) PostLoginHook(w http.ResponseWriter, r *http.Request, g n
 	}
 
 	if a.Type == flow.TypeAPI {
+		span.SetAttributes(attribute.String("flow_type", string(flow.TypeAPI)))
 		if err := e.d.SessionPersister().UpsertSession(r.Context(), s); err != nil {
 			return errors.WithStack(err)
 		}
@@ -170,18 +206,27 @@ func (e *HookExecutor) PostLoginHook(w http.ResponseWriter, r *http.Request, g n
 			WithField("session_id", s.ID).
 			WithField("identity_id", i.ID).
 			Info("Identity authenticated successfully and was issued an Ory Kratos Session Token.")
-		trace.SpanFromContext(r.Context()).AddEvent(
-			semconv.EventSessionIssued,
-			trace.WithAttributes(
-				attribute.String(semconv.AttrIdentityID, i.ID.String()),
-				attribute.String(semconv.AttrNID, i.NID.String()),
-				attribute.String(semconv.AttrClientIP, httpx.ClientIP(r)),
-				attribute.String("flow", string(flow.TypeAPI)),
-			),
-		)
+
+		span.AddEvent(events.NewLoginSucceeded(r.Context(), &events.LoginSucceededOpts{
+			SessionID:    s.ID,
+			IdentityID:   i.ID,
+			FlowType:     string(a.Type),
+			RequestedAAL: string(a.RequestedAAL),
+			IsRefresh:    a.Refresh,
+			Method:       a.Active.String(),
+			SSOProvider:  provider,
+		}))
+		if a.IDToken != "" {
+			// We don't want to redirect with the code, if the flow was submitted with an ID token.
+			// This is the case for Sign in with native Apple SDK or Google SDK.
+		} else if handled, err := e.d.SessionManager().MaybeRedirectAPICodeFlow(w, r, a, s.ID, g); err != nil {
+			return errors.WithStack(err)
+		} else if handled {
+			return nil
+		}
 
 		response := &APIFlowResponse{Session: s, Token: s.Token}
-		if required, _ := e.requiresAAL2(r, s, a); required {
+		if required, _ := e.requiresAAL2(r, classified, a); required {
 			// If AAL is not satisfied, we omit the identity to preserve the user's privacy in case of a phishing attack.
 			response.Session.Identity = nil
 		}
@@ -199,25 +244,48 @@ func (e *HookExecutor) PostLoginHook(w http.ResponseWriter, r *http.Request, g n
 		WithField("identity_id", i.ID).
 		WithField("session_id", s.ID).
 		Info("Identity authenticated successfully and was issued an Ory Kratos Session Cookie.")
-	trace.SpanFromContext(r.Context()).AddEvent(
-		semconv.EventSessionIssued,
-		trace.WithAttributes(
-			attribute.String(semconv.AttrIdentityID, i.ID.String()),
-			attribute.String(semconv.AttrNID, i.NID.String()),
-			attribute.String(semconv.AttrClientIP, httpx.ClientIP(r)),
-			attribute.String("flow", string(flow.TypeBrowser)),
-		),
-	)
+
+	trace.SpanFromContext(r.Context()).AddEvent(events.NewLoginSucceeded(r.Context(), &events.LoginSucceededOpts{
+		SessionID:  s.ID,
+		IdentityID: i.ID, FlowType: string(a.Type), RequestedAAL: string(a.RequestedAAL), IsRefresh: a.Refresh, Method: a.Active.String(),
+		SSOProvider: provider,
+	}))
 
 	if x.IsJSONRequest(r) {
+		span.SetAttributes(attribute.String("flow_type", "spa"))
+
 		// Browser flows rely on cookies. Adding tokens in the mix will confuse consumers.
 		s.Token = ""
 
-		response := &APIFlowResponse{Session: s}
-		if required, _ := e.requiresAAL2(r, s, a); required {
-			// If AAL is not satisfied, we omit the identity to preserve the user's privacy in case of a phishing attack.
-			response.Session.Identity = nil
+		// If Kratos is used as a Hydra login provider, we need to redirect back to Hydra by returning a 422 status
+		// with the post login challenge URL as the body.
+		if a.OAuth2LoginChallenge != "" {
+			postChallengeURL, err := e.d.Hydra().AcceptLoginRequest(r.Context(),
+				hydra.AcceptLoginRequestParams{
+					LoginChallenge:        string(a.OAuth2LoginChallenge),
+					IdentityID:            i.ID.String(),
+					SessionID:             s.ID.String(),
+					AuthenticationMethods: s.AMR,
+				})
+			if err != nil {
+				return err
+			}
+			span.SetAttributes(attribute.String("return_to", postChallengeURL), attribute.String("redirect_reason", "oauth2 login challenge"))
+			e.d.Writer().WriteError(w, r, flow.NewBrowserLocationChangeRequiredError(postChallengeURL))
+			return nil
 		}
+
+		// If we detect that whoami would require a higher AAL, we redirect!
+		if _, err := e.requiresAAL2(r, s, a); err != nil {
+			if aalErr := new(session.ErrAALNotSatisfied); errors.As(err, &aalErr) {
+				span.SetAttributes(attribute.String("return_to", aalErr.RedirectTo), attribute.String("redirect_reason", "requires aal2"))
+				e.d.Writer().WriteError(w, r, flow.NewBrowserLocationChangeRequiredError(aalErr.RedirectTo))
+				return nil
+			}
+			return err
+		}
+
+		response := &APIFlowResponse{Session: s}
 		e.d.Writer().Write(w, r, response)
 		return nil
 	}
@@ -232,15 +300,22 @@ func (e *HookExecutor) PostLoginHook(w http.ResponseWriter, r *http.Request, g n
 	}
 
 	finalReturnTo := returnTo.String()
-	if a.OAuth2LoginChallenge.Valid {
-		rt, err := e.d.Hydra().AcceptLoginRequest(r.Context(), a.OAuth2LoginChallenge.UUID, i.ID.String(), s.AMR)
+	if a.OAuth2LoginChallenge != "" {
+		rt, err := e.d.Hydra().AcceptLoginRequest(r.Context(),
+			hydra.AcceptLoginRequestParams{
+				LoginChallenge:        string(a.OAuth2LoginChallenge),
+				IdentityID:            i.ID.String(),
+				SessionID:             s.ID.String(),
+				AuthenticationMethods: s.AMR,
+			})
 		if err != nil {
 			return err
 		}
 		finalReturnTo = rt
+		span.SetAttributes(attribute.String("return_to", rt), attribute.String("redirect_reason", "oauth2 login challenge"))
 	}
 
-	x.ContentNegotiationRedirection(w, r, s.Declassify(), e.d.Writer(), finalReturnTo)
+	x.ContentNegotiationRedirection(w, r, s, e.d.Writer(), finalReturnTo)
 	return nil
 }
 
@@ -252,4 +327,52 @@ func (e *HookExecutor) PreLoginHook(w http.ResponseWriter, r *http.Request, a *F
 	}
 
 	return nil
+}
+
+// maybeLinkCredentials links the identity with the credentials of the inner context of the login flow.
+func (e *HookExecutor) maybeLinkCredentials(ctx context.Context, sess *session.Session, ident *identity.Identity, loginFlow *Flow) error {
+	lc, err := flow.DuplicateCredentials(loginFlow)
+	if err != nil {
+		return err
+	} else if lc == nil {
+		return nil
+	}
+
+	if err := e.checkDuplicateCredentialsIdentifierMatch(ctx, ident.ID, lc.DuplicateIdentifier); err != nil {
+		return err
+	}
+	strategy, err := e.d.AllLoginStrategies().Strategy(lc.CredentialsType)
+	if err != nil {
+		return err
+	}
+
+	linkableStrategy, ok := strategy.(LinkableStrategy)
+	if !ok {
+		// This should never happen because we check for this in the registration flow.
+		return errors.Errorf("strategy is not linkable: %T", linkableStrategy)
+	}
+
+	if err := linkableStrategy.Link(ctx, ident, lc.CredentialsConfig); err != nil {
+		return err
+	}
+
+	method := strategy.CompletedAuthenticationMethod(ctx)
+	sess.CompletedLoginForMethod(method)
+
+	return nil
+}
+
+func (e *HookExecutor) checkDuplicateCredentialsIdentifierMatch(ctx context.Context, identityID uuid.UUID, match string) error {
+	i, err := e.d.PrivilegedIdentityPool().GetIdentityConfidential(ctx, identityID)
+	if err != nil {
+		return err
+	}
+	for _, credentials := range i.Credentials {
+		for _, identifier := range credentials.Identifiers {
+			if identifier == match {
+				return nil
+			}
+		}
+	}
+	return schema.NewLinkedCredentialsDoNotMatch()
 }

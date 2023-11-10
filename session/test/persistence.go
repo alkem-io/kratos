@@ -14,7 +14,7 @@ import (
 
 	"github.com/ory/kratos/identity"
 
-	"github.com/bxcodec/faker/v3"
+	"github.com/go-faker/faker/v4"
 	"github.com/gofrs/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -114,12 +114,12 @@ func TestPersister(ctx context.Context, conf *config.Config, p interface {
 			})
 
 			t.Run("case=update session", func(t *testing.T) {
-				expected.AuthenticatorAssuranceLevel = identity.AuthenticatorAssuranceLevel3
+				expected.AuthenticatorAssuranceLevel = identity.AuthenticatorAssuranceLevel1
 				require.NoError(t, p.UpsertSession(ctx, &expected))
 
 				actual, err := p.GetSessionByToken(ctx, expected.Token, session.ExpandDefault, identity.ExpandDefault)
 				check(actual, err)
-				assert.Equal(t, identity.AuthenticatorAssuranceLevel3, actual.AuthenticatorAssuranceLevel)
+				assert.Equal(t, identity.AuthenticatorAssuranceLevel1, actual.AuthenticatorAssuranceLevel)
 			})
 
 			t.Run("case=remove amr and update", func(t *testing.T) {
@@ -283,7 +283,7 @@ func TestPersister(ctx context.Context, conf *config.Config, p interface {
 				t.Run("case=all "+tc.desc, func(t *testing.T) {
 					paginatorOpts := make([]keysetpagination.Option, 0)
 					actual, total, nextPage, err := l.ListSessions(ctx, tc.active, paginatorOpts, session.ExpandEverything)
-					require.NoError(t, err)
+					require.NoError(t, err, "%+v", err)
 
 					require.Equal(t, len(tc.expected), len(actual))
 					require.Equal(t, int64(len(tc.expected)), total)

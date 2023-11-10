@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/bxcodec/faker/v3"
+	"github.com/go-faker/faker/v4"
 	"github.com/gobuffalo/httptest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -161,7 +161,7 @@ func SelfServiceHookSettingsErrorHandler(t *testing.T, w http.ResponseWriter, r 
 	return SelfServiceHookErrorHandler(t, w, r, settings.ErrHookAbortFlow, err)
 }
 
-func SelfServiceHookErrorHandler(t *testing.T, w http.ResponseWriter, r *http.Request, abortErr error, actualErr error) bool {
+func SelfServiceHookErrorHandler(t *testing.T, w http.ResponseWriter, _ *http.Request, abortErr error, actualErr error) bool {
 	if actualErr != nil {
 		t.Logf("received error: %+v", actualErr)
 		if errors.Is(actualErr, abortErr) {

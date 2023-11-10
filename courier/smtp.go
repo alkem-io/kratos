@@ -82,13 +82,13 @@ func newSMTP(ctx context.Context, deps Dependencies) (*smtpClient, error) {
 		// Enforcing StartTLS by default for security best practices (config review, etc.)
 		skipStartTLS, _ := strconv.ParseBool(uri.Query().Get("disable_starttls"))
 		if !skipStartTLS {
-			// #nosec G402 This is ok (and required!) because it is configurable and disabled by default.
+			//#nosec G402 -- This is ok (and required!) because it is configurable and disabled by default.
 			dialer.TLSConfig = &tls.Config{InsecureSkipVerify: sslSkipVerify, Certificates: tlsCertificates, ServerName: serverName}
 			// Enforcing StartTLS
 			dialer.StartTLSPolicy = gomail.MandatoryStartTLS
 		}
 	case "smtps":
-		// #nosec G402 This is ok (and required!) because it is configurable and disabled by default.
+		//#nosec G402 -- This is ok (and required!) because it is configurable and disabled by default.
 		dialer.TLSConfig = &tls.Config{InsecureSkipVerify: sslSkipVerify, Certificates: tlsCertificates, ServerName: serverName}
 		dialer.SSL = true
 	}
@@ -157,6 +157,9 @@ func (c *courier) QueueEmail(ctx context.Context, t EmailTemplate) (uuid.UUID, e
 }
 
 func (c *courier) dispatchEmail(ctx context.Context, msg Message) error {
+	if c.deps.CourierConfig().CourierEmailStrategy(ctx) == "http" {
+		return c.dispatchMailerEmail(ctx, msg)
+	}
 	if c.smtpClient.Host == "" {
 		return errors.WithStack(herodot.ErrInternalServerError.WithErrorf("Courier tried to deliver an email but %s is not set!", config.ViperKeyCourierSMTPURL))
 	}
@@ -212,7 +215,12 @@ func (c *courier) dispatchEmail(ctx context.Context, msg Message) error {
 			Error("Unable to send email using SMTP connection.")
 
 		var protoErr *textproto.Error
-		if containsProtoErr := errors.As(err, &protoErr); containsProtoErr && protoErr.Code >= 500 {
+		var mailErr *gomail.SendError
+
+		switch {
+		case errors.As(err, &mailErr) && mailErr.Index >= 500:
+			fallthrough
+		case errors.As(err, &protoErr) && protoErr.Code >= 500:
 			// See https://en.wikipedia.org/wiki/List_of_SMTP_server_return_codes
 			// If the SMTP server responds with 5xx, sending the message should not be retried (without changing something about the request)
 			if err := c.deps.CourierPersister().SetMessageStatus(ctx, msg.ID, MessageStatusAbandoned); err != nil {
@@ -224,6 +232,7 @@ func (c *courier) dispatchEmail(ctx context.Context, msg Message) error {
 				return err
 			}
 		}
+
 		return errors.WithStack(herodot.ErrInternalServerError.
 			WithError(err.Error()).WithReason("failed to send email via smtp"))
 	}

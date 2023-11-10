@@ -6,15 +6,29 @@ package identity
 import (
 	"context"
 
+	"github.com/ory/x/crdbx"
+
+	"github.com/ory/kratos/x"
+	"github.com/ory/x/pagination/keysetpagination"
 	"github.com/ory/x/sqlxx"
 
 	"github.com/gofrs/uuid"
 )
 
 type (
+	ListIdentityParameters struct {
+		Expand                       Expandables
+		CredentialsIdentifier        string
+		CredentialsIdentifierSimilar string
+		KeySetPagination             []keysetpagination.Option
+		// DEPRECATED
+		PagePagination   *x.Page
+		ConsistencyLevel crdbx.ConsistencyLevel
+	}
+
 	Pool interface {
 		// ListIdentities lists all identities in the store given the page and itemsPerPage.
-		ListIdentities(ctx context.Context, expandables sqlxx.Expandables, page, itemsPerPage int) ([]Identity, error)
+		ListIdentities(ctx context.Context, params ListIdentityParameters) ([]Identity, *keysetpagination.Paginator, error)
 
 		// CountIdentities counts the number of identities in the store.
 		CountIdentities(ctx context.Context) (int64, error)
@@ -55,6 +69,10 @@ type (
 		// if identity exists, backend connectivity is broken, or trait validation fails.
 		CreateIdentity(context.Context, *Identity) error
 
+		// CreateIdentities creates multiple identities. It is capable of setting credentials without encoding. Will return an error
+		// if identity exists, backend connectivity is broken, or trait validation fails.
+		CreateIdentities(context.Context, ...*Identity) error
+
 		// UpdateIdentity updates an identity including its confidential / privileged / protected data.
 		UpdateIdentity(context.Context, *Identity) error
 
@@ -70,5 +88,11 @@ type (
 
 		// HydrateIdentityAssociations hydrates the associations of an identity.
 		HydrateIdentityAssociations(ctx context.Context, i *Identity, expandables Expandables) error
+
+		// InjectTraitsSchemaURL sets the identity's traits JSON schema URL from the schema's ID.
+		InjectTraitsSchemaURL(ctx context.Context, i *Identity) error
+
+		// FindIdentityByAnyCaseSensitiveCredentialIdentifier returns an identity by matching the identifier to any of the identity's credentials.
+		FindIdentityByCredentialIdentifier(ctx context.Context, identifier string, caseSensitive bool) (*Identity, error)
 	}
 )
