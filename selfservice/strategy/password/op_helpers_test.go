@@ -43,25 +43,25 @@ type callTrace string
 
 const (
 	RegistrationUI                       callTrace = "registration-ui"
-	RegistrationWithOAuth2LoginChallenge           = "registration-with-oauth2-login-challenge"
-	RegistrationWithFlowID                         = "registration-with-flow-id"
-	LoginUI                                        = "login-ui"
-	LoginWithOAuth2LoginChallenge                  = "login-with-oauth2-login-challenge"
-	LoginWithFlowID                                = "login-with-flow-id"
-	Consent                                        = "consent"
-	ConsentWithChallenge                           = "consent-with-challenge"
-	ConsentAccept                                  = "consent-accept"
-	ConsentSkip                                    = "consent-skip"
-	ConsentClientSkip                              = "consent-client-skip"
-	CodeExchange                                   = "code-exchange"
-	CodeExchangeWithToken                          = "code-exchange-with-token"
+	RegistrationWithOAuth2LoginChallenge callTrace = "registration-with-oauth2-login-challenge"
+	RegistrationWithFlowID               callTrace = "registration-with-flow-id"
+	LoginUI                              callTrace = "login-ui"
+	LoginWithOAuth2LoginChallenge        callTrace = "login-with-oauth2-login-challenge"
+	LoginWithFlowID                      callTrace = "login-with-flow-id"
+	Consent                              callTrace = "consent"
+	ConsentWithChallenge                 callTrace = "consent-with-challenge"
+	ConsentAccept                        callTrace = "consent-accept"
+	ConsentSkip                          callTrace = "consent-skip"
+	ConsentClientSkip                    callTrace = "consent-client-skip"
+	CodeExchange                         callTrace = "code-exchange"
+	CodeExchangeWithToken                callTrace = "code-exchange-with-token"
 )
 
 type testContextKey string
 
 const (
 	TestUIConfig         testContextKey = "test-ui-config"
-	TestOAuthClientState                = "test-oauth-client-state"
+	TestOAuthClientState testContextKey = "test-oauth-client-state"
 )
 
 type testConfig struct {
@@ -70,13 +70,13 @@ type testConfig struct {
 	browserClient    *http.Client
 	kratosPublicTS   *httptest.Server
 	clientAppTS      *httptest.Server
-	hydraAdminClient hydraclientgo.OAuth2Api
+	hydraAdminClient *hydraclientgo.OAuth2ApiService
 	consentRemember  bool
 	requestedScope   []string
 	callTrace        *[]callTrace
 }
 
-func createHydraOAuth2ApiClient(url string) hydraclientgo.OAuth2Api {
+func createHydraOAuth2ApiClient(url string) *hydraclientgo.OAuth2ApiService {
 	configuration := hydraclientgo.NewConfiguration()
 	configuration.Host = urlx.ParseOrPanic(url).Host
 	configuration.Servers = hydraclientgo.ServerConfigurations{{URL: url}}
@@ -84,7 +84,7 @@ func createHydraOAuth2ApiClient(url string) hydraclientgo.OAuth2Api {
 	return hydraclientgo.NewAPIClient(configuration).OAuth2Api
 }
 
-func createOAuth2Client(t *testing.T, ctx context.Context, hydraAdmin hydraclientgo.OAuth2Api, redirectURIs []string, scope string, skipConsent bool) string {
+func createOAuth2Client(t *testing.T, ctx context.Context, hydraAdmin *hydraclientgo.OAuth2ApiService, redirectURIs []string, scope string, skipConsent bool) string {
 	t.Helper()
 
 	clientName := "kratos-hydra-integration-test-client-1"
@@ -133,7 +133,8 @@ func newHydra(t *testing.T, loginUI string, consentUI string) (hydraAdmin string
 
 	hydraResource, err := pool.RunWithOptions(&dockertest.RunOptions{
 		Repository: "oryd/hydra",
-		Tag:        "v2.2.0",
+		// Keep tag in sync with the version in ci.yaml
+		Tag: "v2.2.0@sha256:6c0f9195fe04ae16b095417b323881f8c9008837361160502e11587663b37c09",
 		Env: []string{
 			"DSN=memory",
 			fmt.Sprintf("URLS_SELF_ISSUER=http://127.0.0.1:%d/", publicPort),

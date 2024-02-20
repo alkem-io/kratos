@@ -240,7 +240,7 @@ type FrontendApi interface {
 
 		If a valid provided session cookie or session token is provided, a 400 Bad Request error.
 
-		To fetch an existing recovery flow call `/self-service/recovery/flows?flow=<flow_id>`.
+		On an existing recovery flow, use the `getRecoveryFlow` API endpoint.
 
 		You MUST NOT use this endpoint in client-side (Single Page Apps, ReactJS, AngularJS) nor server-side (Java Server
 		Pages, NodeJS, PHP, Golang, ...) browser applications. Using this endpoint in these applications will make
@@ -775,8 +775,8 @@ type FrontendApi interface {
 	UpdateLogoutFlowExecute(r FrontendApiApiUpdateLogoutFlowRequest) (*http.Response, error)
 
 	/*
-			 * UpdateRecoveryFlow Complete Recovery Flow
-			 * Use this endpoint to complete a recovery flow. This endpoint
+			 * UpdateRecoveryFlow Update Recovery Flow
+			 * Use this endpoint to update a recovery flow. This endpoint
 		behaves differently for API and browser flows and has several states:
 
 		`choose_method` expects `flow` (in the URL query) and `email` (in the body) to be sent
@@ -942,6 +942,7 @@ type FrontendApiApiCreateBrowserLoginFlowRequest struct {
 	cookie         *string
 	loginChallenge *string
 	organization   *string
+	via            *string
 }
 
 func (r FrontendApiApiCreateBrowserLoginFlowRequest) Refresh(refresh bool) FrontendApiApiCreateBrowserLoginFlowRequest {
@@ -966,6 +967,10 @@ func (r FrontendApiApiCreateBrowserLoginFlowRequest) LoginChallenge(loginChallen
 }
 func (r FrontendApiApiCreateBrowserLoginFlowRequest) Organization(organization string) FrontendApiApiCreateBrowserLoginFlowRequest {
 	r.organization = &organization
+	return r
+}
+func (r FrontendApiApiCreateBrowserLoginFlowRequest) Via(via string) FrontendApiApiCreateBrowserLoginFlowRequest {
+	r.via = &via
 	return r
 }
 
@@ -1048,6 +1053,9 @@ func (a *FrontendApiService) CreateBrowserLoginFlowExecute(r FrontendApiApiCreat
 	}
 	if r.organization != nil {
 		localVarQueryParams.Add("organization", parameterToString(*r.organization, ""))
+	}
+	if r.via != nil {
+		localVarQueryParams.Add("via", parameterToString(*r.via, ""))
 	}
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{}
@@ -1890,6 +1898,7 @@ type FrontendApiApiCreateNativeLoginFlowRequest struct {
 	xSessionToken                  *string
 	returnSessionTokenExchangeCode *bool
 	returnTo                       *string
+	via                            *string
 }
 
 func (r FrontendApiApiCreateNativeLoginFlowRequest) Refresh(refresh bool) FrontendApiApiCreateNativeLoginFlowRequest {
@@ -1910,6 +1919,10 @@ func (r FrontendApiApiCreateNativeLoginFlowRequest) ReturnSessionTokenExchangeCo
 }
 func (r FrontendApiApiCreateNativeLoginFlowRequest) ReturnTo(returnTo string) FrontendApiApiCreateNativeLoginFlowRequest {
 	r.returnTo = &returnTo
+	return r
+}
+func (r FrontendApiApiCreateNativeLoginFlowRequest) Via(via string) FrontendApiApiCreateNativeLoginFlowRequest {
+	r.via = &via
 	return r
 }
 
@@ -1985,6 +1998,9 @@ func (a *FrontendApiService) CreateNativeLoginFlowExecute(r FrontendApiApiCreate
 	}
 	if r.returnTo != nil {
 		localVarQueryParams.Add("return_to", parameterToString(*r.returnTo, ""))
+	}
+	if r.via != nil {
+		localVarQueryParams.Add("via", parameterToString(*r.via, ""))
 	}
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{}
@@ -2075,7 +2091,7 @@ func (r FrontendApiApiCreateNativeRecoveryFlowRequest) Execute() (*RecoveryFlow,
 
 If a valid provided session cookie or session token is provided, a 400 Bad Request error.
 
-To fetch an existing recovery flow call `/self-service/recovery/flows?flow=<flow_id>`.
+On an existing recovery flow, use the `getRecoveryFlow` API endpoint.
 
 You MUST NOT use this endpoint in client-side (Single Page Apps, ReactJS, AngularJS) nor server-side (Java Server
 Pages, NodeJS, PHP, Golang, ...) browser applications. Using this endpoint in these applications will make
@@ -5076,8 +5092,8 @@ func (r FrontendApiApiUpdateRecoveryFlowRequest) Execute() (*RecoveryFlow, *http
 }
 
 /*
-  - UpdateRecoveryFlow Complete Recovery Flow
-  - Use this endpoint to complete a recovery flow. This endpoint
+  - UpdateRecoveryFlow Update Recovery Flow
+  - Use this endpoint to update a recovery flow. This endpoint
 
 behaves differently for API and browser flows and has several states:
 

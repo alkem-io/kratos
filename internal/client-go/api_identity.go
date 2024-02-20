@@ -114,7 +114,7 @@ type IdentityApi interface {
 		You can only delete second factor (aal2) credentials.
 			 * @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 			 * @param id ID is the identity's ID.
-			 * @param type_ Type is the credential's Type. One of totp, webauthn, lookup
+			 * @param type_ Type is the type of credentials to be deleted. password CredentialsTypePassword oidc CredentialsTypeOIDC totp CredentialsTypeTOTP lookup_secret CredentialsTypeLookup webauthn CredentialsTypeWebAuthn code CredentialsTypeCodeAuth link_recovery CredentialsTypeRecoveryLink  CredentialsTypeRecoveryLink is a special credential type linked to the link strategy (recovery flow).  It is not used within the credentials object itself. code_recovery CredentialsTypeRecoveryCode
 			 * @return IdentityApiApiDeleteIdentityCredentialsRequest
 	*/
 	DeleteIdentityCredentials(ctx context.Context, id string, type_ string) IdentityApiApiDeleteIdentityCredentialsRequest
@@ -774,9 +774,14 @@ func (a *IdentityApiService) CreateRecoveryCodeForIdentityExecute(r IdentityApiA
 type IdentityApiApiCreateRecoveryLinkForIdentityRequest struct {
 	ctx                               context.Context
 	ApiService                        IdentityApi
+	returnTo                          *string
 	createRecoveryLinkForIdentityBody *CreateRecoveryLinkForIdentityBody
 }
 
+func (r IdentityApiApiCreateRecoveryLinkForIdentityRequest) ReturnTo(returnTo string) IdentityApiApiCreateRecoveryLinkForIdentityRequest {
+	r.returnTo = &returnTo
+	return r
+}
 func (r IdentityApiApiCreateRecoveryLinkForIdentityRequest) CreateRecoveryLinkForIdentityBody(createRecoveryLinkForIdentityBody CreateRecoveryLinkForIdentityBody) IdentityApiApiCreateRecoveryLinkForIdentityRequest {
 	r.createRecoveryLinkForIdentityBody = &createRecoveryLinkForIdentityBody
 	return r
@@ -826,6 +831,9 @@ func (a *IdentityApiService) CreateRecoveryLinkForIdentityExecute(r IdentityApiA
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
 
+	if r.returnTo != nil {
+		localVarQueryParams.Add("return_to", parameterToString(*r.returnTo, ""))
+	}
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{"application/json"}
 
@@ -1069,7 +1077,7 @@ func (r IdentityApiApiDeleteIdentityCredentialsRequest) Execute() (*http.Respons
 You can only delete second factor (aal2) credentials.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param id ID is the identity's ID.
-  - @param type_ Type is the credential's Type. One of totp, webauthn, lookup
+  - @param type_ Type is the type of credentials to be deleted. password CredentialsTypePassword oidc CredentialsTypeOIDC totp CredentialsTypeTOTP lookup_secret CredentialsTypeLookup webauthn CredentialsTypeWebAuthn code CredentialsTypeCodeAuth link_recovery CredentialsTypeRecoveryLink  CredentialsTypeRecoveryLink is a special credential type linked to the link strategy (recovery flow).  It is not used within the credentials object itself. code_recovery CredentialsTypeRecoveryCode
   - @return IdentityApiApiDeleteIdentityCredentialsRequest
 */
 func (a *IdentityApiService) DeleteIdentityCredentials(ctx context.Context, id string, type_ string) IdentityApiApiDeleteIdentityCredentialsRequest {
@@ -2052,8 +2060,10 @@ type IdentityApiApiListIdentitiesRequest struct {
 	pageSize                            *int64
 	pageToken                           *string
 	consistency                         *string
+	ids                                 *[]string
 	credentialsIdentifier               *string
 	previewCredentialsIdentifierSimilar *string
+	includeCredential                   *[]string
 }
 
 func (r IdentityApiApiListIdentitiesRequest) PerPage(perPage int64) IdentityApiApiListIdentitiesRequest {
@@ -2076,12 +2086,20 @@ func (r IdentityApiApiListIdentitiesRequest) Consistency(consistency string) Ide
 	r.consistency = &consistency
 	return r
 }
+func (r IdentityApiApiListIdentitiesRequest) Ids(ids []string) IdentityApiApiListIdentitiesRequest {
+	r.ids = &ids
+	return r
+}
 func (r IdentityApiApiListIdentitiesRequest) CredentialsIdentifier(credentialsIdentifier string) IdentityApiApiListIdentitiesRequest {
 	r.credentialsIdentifier = &credentialsIdentifier
 	return r
 }
 func (r IdentityApiApiListIdentitiesRequest) PreviewCredentialsIdentifierSimilar(previewCredentialsIdentifierSimilar string) IdentityApiApiListIdentitiesRequest {
 	r.previewCredentialsIdentifierSimilar = &previewCredentialsIdentifierSimilar
+	return r
+}
+func (r IdentityApiApiListIdentitiesRequest) IncludeCredential(includeCredential []string) IdentityApiApiListIdentitiesRequest {
+	r.includeCredential = &includeCredential
 	return r
 }
 
@@ -2142,11 +2160,33 @@ func (a *IdentityApiService) ListIdentitiesExecute(r IdentityApiApiListIdentitie
 	if r.consistency != nil {
 		localVarQueryParams.Add("consistency", parameterToString(*r.consistency, ""))
 	}
+	if r.ids != nil {
+		t := *r.ids
+		if reflect.TypeOf(t).Kind() == reflect.Slice {
+			s := reflect.ValueOf(t)
+			for i := 0; i < s.Len(); i++ {
+				localVarQueryParams.Add("ids", parameterToString(s.Index(i), "multi"))
+			}
+		} else {
+			localVarQueryParams.Add("ids", parameterToString(t, "multi"))
+		}
+	}
 	if r.credentialsIdentifier != nil {
 		localVarQueryParams.Add("credentials_identifier", parameterToString(*r.credentialsIdentifier, ""))
 	}
 	if r.previewCredentialsIdentifierSimilar != nil {
 		localVarQueryParams.Add("preview_credentials_identifier_similar", parameterToString(*r.previewCredentialsIdentifierSimilar, ""))
+	}
+	if r.includeCredential != nil {
+		t := *r.includeCredential
+		if reflect.TypeOf(t).Kind() == reflect.Slice {
+			s := reflect.ValueOf(t)
+			for i := 0; i < s.Len(); i++ {
+				localVarQueryParams.Add("include_credential", parameterToString(s.Index(i), "multi"))
+			}
+		} else {
+			localVarQueryParams.Add("include_credential", parameterToString(t, "multi"))
+		}
 	}
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{}

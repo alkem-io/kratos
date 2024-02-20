@@ -8,18 +8,17 @@ import (
 	"encoding/json"
 	"time"
 
-	"go.opentelemetry.io/otel/trace"
-
-	"github.com/ory/kratos/x/events"
-
+	"github.com/dgraph-io/ristretto"
 	"github.com/gofrs/uuid"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ory/herodot"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/x"
+	"github.com/ory/kratos/x/events"
 	"github.com/ory/x/fetcher"
 	"github.com/ory/x/jsonnetsecure"
 	"github.com/ory/x/jwksx"
@@ -32,11 +31,12 @@ type (
 		x.TracingProvider
 		x.HTTPClientProvider
 		config.Provider
-		x.JWKFetchProvider
+		x.JWKSFetchProvider
 	}
 	Tokenizer struct {
 		r       tokenizerDependencies
 		nowFunc func() time.Time
+		cache   *ristretto.Cache
 	}
 	TokenizerProvider interface {
 		SessionTokenizer() *Tokenizer
@@ -44,7 +44,12 @@ type (
 )
 
 func NewTokenizer(r tokenizerDependencies) *Tokenizer {
-	return &Tokenizer{r: r, nowFunc: time.Now}
+	cache, _ := ristretto.NewCache(&ristretto.Config{
+		MaxCost:     50 << 20, // 50MB,
+		NumCounters: 500_000,  // 1kB per snippet -> 50k snippets -> 500k counters
+		BufferItems: 64,
+	})
+	return &Tokenizer{r: r, nowFunc: time.Now, cache: cache}
 }
 
 func (s *Tokenizer) SetNowFunc(t func() time.Time) {
@@ -61,7 +66,7 @@ func (s *Tokenizer) TokenizeSession(ctx context.Context, template string, sessio
 	}
 
 	httpClient := s.r.HTTPClient(ctx)
-	key, err := s.r.Fetcher().ResolveKey(
+	key, err := s.r.JWKSFetcher().ResolveKey(
 		ctx,
 		tpl.JWKSURL,
 		jwksx.WithCacheEnabled(),
@@ -84,8 +89,6 @@ func (s *Tokenizer) TokenizeSession(ctx context.Context, template string, sessio
 		return err
 	}
 
-	fetch := fetcher.NewFetcher(fetcher.WithClient(httpClient))
-
 	now := s.nowFunc()
 	token := jwt.New(alg)
 	token.Header["kid"] = key.KeyID()
@@ -100,11 +103,6 @@ func (s *Tokenizer) TokenizeSession(ctx context.Context, template string, sessio
 	}
 
 	if mapper := tpl.ClaimsMapperURL; len(mapper) > 0 {
-		jn, err := fetch.FetchContext(ctx, mapper)
-		if err != nil {
-			return err
-		}
-
 		sessionRaw, err := json.Marshal(session)
 		if err != nil {
 			return errors.WithStack(herodot.ErrInternalServerError.WithWrap(err).WithReasonf("Unable to encode session to JSON."))
@@ -118,7 +116,12 @@ func (s *Tokenizer) TokenizeSession(ctx context.Context, template string, sessio
 		vm.ExtCode("session", string(sessionRaw))
 		vm.ExtCode("claims", string(claimsRaw))
 
-		evaluated, err := vm.EvaluateAnonymousSnippet(tpl.ClaimsMapperURL, jn.String())
+		fetcher := fetcher.NewFetcher(fetcher.WithClient(httpClient), fetcher.WithCache(s.cache, 60*time.Minute))
+		jsonnet, err := fetcher.FetchContext(ctx, mapper)
+		if err != nil {
+			return err
+		}
+		evaluated, err := vm.EvaluateAnonymousSnippet(tpl.ClaimsMapperURL, jsonnet.String())
 		if err != nil {
 			return errors.WithStack(herodot.ErrBadRequest.WithWrap(err).WithDebug(err.Error()).WithReasonf("Unable to execute tokenizer JsonNet."))
 		}

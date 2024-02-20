@@ -210,9 +210,9 @@ func (s *Strategy) setRoutes(r *x.RouterPublic) {
 	// Apple can use the POST request method when calling the callback
 	if handle, _, _ := r.Lookup("POST", RouteCallback); handle == nil {
 		// Hardcoded path to Apple provider, I don't have a better way of doing it right now.
-		// Also this exempt disables CSRF checks for both GET and POST requests. Unfortunately
+		// Also this ignore disables CSRF checks for both GET and POST requests. Unfortunately
 		// CSRF handler does not allow to define a rule based on the request method, at least not yet.
-		s.d.CSRFHandler().ExemptPath(RouteBase + "/callback/apple")
+		s.d.CSRFHandler().IgnorePath(RouteBase + "/callback/apple")
 
 		// When handler is called using POST method, the cookies are not attached to the request
 		// by the browser. So here we just redirect the request to the same location rewriting the
@@ -481,6 +481,8 @@ func (s *Strategy) ExchangeCode(ctx context.Context, provider Provider, code str
 		}
 	}
 
+	client := s.d.HTTPClient(ctx)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, client.HTTPClient)
 	token, err = te.Exchange(ctx, code)
 	return token, err
 }
@@ -568,7 +570,7 @@ func (s *Strategy) forwardError(w http.ResponseWriter, r *http.Request, f flow.F
 	}
 }
 
-func (s *Strategy) handleError(w http.ResponseWriter, r *http.Request, f flow.Flow, provider string, traits []byte, err error) error {
+func (s *Strategy) handleError(w http.ResponseWriter, r *http.Request, f flow.Flow, providerID string, traits []byte, err error) error {
 	switch rf := f.(type) {
 	case *login.Flow:
 		return err
@@ -588,7 +590,7 @@ func (s *Strategy) handleError(w http.ResponseWriter, r *http.Request, f flow.Fl
 				rf.UI.Messages.Add(text.NewErrorValidationDuplicateCredentialsOnOIDCLink())
 			}
 
-			lf, err := s.registrationToLogin(w, r, rf, provider)
+			lf, err := s.registrationToLogin(w, r, rf, providerID)
 			if err != nil {
 				return err
 			}
@@ -611,7 +613,12 @@ func (s *Strategy) handleError(w http.ResponseWriter, r *http.Request, f flow.Fl
 				}
 
 				newLoginURL := s.d.Config().SelfServiceFlowLoginUI(r.Context()).String()
-				lf.UI.Messages.Add(text.NewInfoLoginLinkMessage(dc.DuplicateIdentifier, provider, newLoginURL))
+				providerLabel := providerID
+				provider, _ := s.provider(r.Context(), r, providerID)
+				if provider != nil && provider.Config() != nil {
+					providerLabel = provider.Config().Label
+				}
+				lf.UI.Messages.Add(text.NewInfoLoginLinkMessage(dc.DuplicateIdentifier, providerLabel, newLoginURL))
 
 				err := s.d.LoginFlowPersister().UpdateLoginFlow(r.Context(), lf)
 				if err != nil {
@@ -627,7 +634,7 @@ func (s *Strategy) handleError(w http.ResponseWriter, r *http.Request, f flow.Fl
 
 		// Adds the "Continue" button
 		rf.UI.SetCSRF(s.d.GenerateCSRFToken(r))
-		AddProvider(rf.UI, provider, text.NewInfoRegistrationContinue())
+		AddProvider(rf.UI, providerID, text.NewInfoRegistrationContinue())
 
 		if traits != nil {
 			ds, err := s.d.Config().DefaultIdentityTraitsSchemaURL(r.Context())
@@ -656,7 +663,7 @@ func (s *Strategy) NodeGroup() node.UiNodeGroup {
 	return node.OpenIDConnectGroup
 }
 
-func (s *Strategy) CompletedAuthenticationMethod(ctx context.Context) session.AuthenticationMethod {
+func (s *Strategy) CompletedAuthenticationMethod(ctx context.Context, _ session.AuthenticationMethods) session.AuthenticationMethod {
 	return session.AuthenticationMethod{
 		Method: s.ID(),
 		AAL:    identity.AuthenticatorAssuranceLevel1,

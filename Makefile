@@ -49,7 +49,7 @@ docs/swagger:
 	npx @redocly/openapi-cli preview-docs spec/swagger.json
 
 .bin/golangci-lint: Makefile
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -d -b .bin v1.54.2
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -d -b .bin v1.55.2
 
 .bin/hydra: Makefile
 	bash <(curl https://raw.githubusercontent.com/ory/meta/master/install.sh) -d -b .bin hydra v2.2.0-rc.3
@@ -125,6 +125,7 @@ sdk: .bin/swagger .bin/ory node_modules
 		--git-user-id ory \
 		--git-repo-id client-go \
 		--git-host github.com \
+		--api-name-suffix "Api" \
 		-t .schema/openapi/templates/go \
 		-c .schema/openapi/gen.go.yml
 
@@ -138,6 +139,7 @@ sdk: .bin/swagger .bin/ory node_modules
 		--git-user-id ory \
 		--git-repo-id client-go \
 		--git-host github.com \
+		--api-name-suffix "Api" \
 		-t .schema/openapi/templates/go \
 		-c .schema/openapi/gen.go.yml
 
@@ -173,7 +175,7 @@ docker:
 	DOCKER_BUILDKIT=1 DOCKER_CONTENT_TRUST=1 docker build -f .docker/Dockerfile-build --build-arg=COMMIT=$(VCS_REF) --build-arg=BUILD_DATE=$(BUILD_DATE) -t oryd/kratos:${IMAGE_TAG} .
 
 .PHONY: test-e2e
-test-e2e: node_modules test-resetdb
+test-e2e: node_modules test-resetdb kratos-config-e2e
 	source script/test-envs.sh
 	test/e2e/run.sh sqlite
 	test/e2e/run.sh postgres
@@ -181,7 +183,7 @@ test-e2e: node_modules test-resetdb
 	test/e2e/run.sh mysql
 
 .PHONY: test-e2e-playwright
-test-e2e-playwright: node_modules test-resetdb
+test-e2e-playwright: node_modules test-resetdb kratos-config-e2e
 	source script/test-envs.sh
 	test/e2e/run.sh --only-setup
 	(cd test/e2e; DB=memory npm run playwright)
@@ -210,3 +212,7 @@ licenses: .bin/licenses node_modules  # checks open-source licenses
 node_modules: package-lock.json
 	npm ci
 	touch node_modules
+
+.PHONY: kratos-config-e2e
+kratos-config-e2e:
+	sh ./test/e2e/render-kratos-config.sh

@@ -7,11 +7,10 @@ import (
 	"database/sql"
 )
 
-type CodeAddressType string
+type CodeAddressType = string
 
 const (
 	CodeAddressTypeEmail CodeAddressType = AddressTypeEmail
-	CodeAddressTypePhone CodeAddressType = AddressTypePhone
 )
 
 // CredentialsCode represents a one time login/registration code

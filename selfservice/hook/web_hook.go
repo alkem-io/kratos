@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 	"time"
 
+	"github.com/dgraph-io/ristretto"
 	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/pkg/errors"
@@ -59,6 +59,12 @@ var _ interface {
 	settings.PostHookPrePersistExecutor
 	settings.PostHookPostPersistExecutor
 } = (*WebHook)(nil)
+
+var jsonnetCache, _ = ristretto.NewCache(&ristretto.Config{
+	MaxCost:     100 << 20, // 100MB,
+	NumCounters: 1_000_000, // 1kB per snippet -> 100k snippets -> 1M counters
+	BufferItems: 64,
+})
 
 type (
 	webHookDependencies interface {
@@ -334,7 +340,7 @@ func (e *WebHook) execute(ctx context.Context, data *templateContext) error {
 			}
 		}(time.Now())
 
-		builder, err := request.NewBuilder(ctx, e.conf, e.deps)
+		builder, err := request.NewBuilder(ctx, e.conf, e.deps, jsonnetCache)
 		if err != nil {
 			return err
 		}
@@ -509,6 +515,7 @@ func isTimeoutError(err error) bool {
 }
 
 func instrumentHTTPClientForEvents(ctx context.Context, httpClient *retryablehttp.Client) {
+	// TODO(@alnr): improve this implementation to redact sensitive data
 	var (
 		attempt   = 0
 		requestID uuid.UUID
@@ -518,12 +525,16 @@ func instrumentHTTPClientForEvents(ctx context.Context, httpClient *retryablehtt
 		attempt = retryNumber + 1
 		requestID = uuid.Must(uuid.NewV4())
 		req.Header.Set("Ory-Webhook-Request-ID", requestID.String())
-		reqBody, _ = httputil.DumpRequestOut(req, true)
+		// TODO(@alnr): redact sensitive data
+		// reqBody, _ = httputil.DumpRequestOut(req, true)
+		reqBody = []byte("<redacted>")
 	}
 	httpClient.ResponseLogHook = func(_ retryablehttp.Logger, res *http.Response) {
-		res.Body = io.NopCloser(io.LimitReader(res.Body, 5<<20)) // read at most 5 MB from the response
-		resBody, _ := httputil.DumpResponse(res, true)
-		resBody = resBody[:min(len(resBody), 2<<10)] // truncate response body to 2 kB for event
+		// res.Body = io.NopCloser(io.LimitReader(res.Body, 5<<20)) // read at most 5 MB from the response
+		// resBody, _ := httputil.DumpResponse(res, true)
+		// resBody = resBody[:min(len(resBody), 2<<10)] // truncate response body to 2 kB for event
+		// TODO(@alnr): redact sensitive data
+		resBody := []byte("<redacted>")
 		trace.SpanFromContext(ctx).AddEvent(events.NewWebhookDelivered(ctx, res.Request.URL, reqBody, res.StatusCode, resBody, attempt, requestID))
 	}
 }

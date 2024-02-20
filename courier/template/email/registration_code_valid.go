@@ -18,9 +18,10 @@ type (
 		model *RegistrationCodeValidModel
 	}
 	RegistrationCodeValidModel struct {
-		To               string
-		Traits           map[string]interface{}
-		RegistrationCode string
+		To               string                 `json:"to"`
+		Traits           map[string]interface{} `json:"traits"`
+		RegistrationCode string                 `json:"registration_code"`
+		RequestURL       string                 `json:"request_url"`
 	}
 )
 
@@ -48,4 +49,8 @@ func (t *RegistrationCodeValid) EmailBodyPlaintext(ctx context.Context) (string,
 
 func (t *RegistrationCodeValid) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.model)
+}
+
+func (t *RegistrationCodeValid) TemplateType() template.TemplateType {
+	return template.TypeRegistrationCodeValid
 }

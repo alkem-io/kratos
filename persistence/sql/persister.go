@@ -13,7 +13,7 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/laher/mergefs"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus/hooks/test"
+	"github.com/sirupsen/logrus"
 
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
@@ -24,8 +24,8 @@ import (
 	"github.com/ory/kratos/session"
 	"github.com/ory/kratos/x"
 	"github.com/ory/x/contextx"
-	"github.com/ory/x/logrusx"
 	"github.com/ory/x/networkx"
+	"github.com/ory/x/otelx"
 	"github.com/ory/x/popx"
 )
 
@@ -82,8 +82,7 @@ func NewPersister(ctx context.Context, r persisterDependencies, c *pop.Connectio
 	}
 	logger := r.Logger()
 	if o.disableLogging {
-		inner, _ := test.NewNullLogger()
-		logger = logrusx.New("kratos", "", logrusx.UseLogger(inner))
+		logger.Logrus().SetLevel(logrus.WarnLevel)
 	}
 	m, err := popx.NewMigrationBox(
 		mergefs.Merge(
@@ -138,9 +137,9 @@ func (p *Persister) Connection(ctx context.Context) *pop.Connection {
 	return p.c.WithContext(ctx)
 }
 
-func (p *Persister) MigrationStatus(ctx context.Context) (popx.MigrationStatuses, error) {
+func (p *Persister) MigrationStatus(ctx context.Context) (_ popx.MigrationStatuses, err error) {
 	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.MigrationStatus")
-	defer span.End()
+	defer otelx.End(span, &err)
 
 	if p.mbs != nil {
 		return p.mbs, nil

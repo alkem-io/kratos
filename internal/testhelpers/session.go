@@ -196,6 +196,20 @@ func NewHTTPClientWithIdentitySessionCookie(t *testing.T, reg *driver.RegistryDe
 	return NewHTTPClientWithSessionCookie(t, reg, s)
 }
 
+func NewHTTPClientWithIdentitySessionCookieLocalhost(t *testing.T, reg *driver.RegistryDefault, id *identity.Identity) *http.Client {
+	req := NewTestHTTPRequest(t, "GET", "/sessions/whoami", nil)
+	s, err := session.NewActiveSession(req,
+		id,
+		NewSessionLifespanProvider(time.Hour),
+		time.Now(),
+		identity.CredentialsTypePassword,
+		identity.AuthenticatorAssuranceLevel1,
+	)
+	require.NoError(t, err, "Could not initialize session from identity.")
+
+	return NewHTTPClientWithSessionCookieLocalhost(t, reg, s)
+}
+
 func NewHTTPClientWithIdentitySessionToken(t *testing.T, reg *driver.RegistryDefault, id *identity.Identity) *http.Client {
 	req := NewTestHTTPRequest(t, "GET", "/sessions/whoami", nil)
 	s, err := session.NewActiveSession(req,
@@ -250,4 +264,14 @@ func (ct *TransportWithHeader) RoundTrip(req *http.Request) (*http.Response, err
 		req.Header.Set(k, ct.h.Get(k))
 	}
 	return ct.RoundTripper.RoundTrip(req)
+}
+
+func AssertNoCSRFCookieInResponse(t *testing.T, _ *httptest.Server, _ *http.Client, r *http.Response) {
+	found := false
+	for _, c := range r.Cookies() {
+		if strings.HasPrefix(c.Name, "csrf_token") {
+			found = true
+		}
+	}
+	require.False(t, found)
 }

@@ -6,6 +6,7 @@ package oidc_test
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,8 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
-
-	_ "embed"
 
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
@@ -119,7 +118,7 @@ func newHydraIntegration(t *testing.T, remote *string, subject *string, claims *
 		GrantScope []string        `json:"grant_scope,omitempty"`
 	}
 
-	var do = func(w http.ResponseWriter, r *http.Request, href string, payload io.Reader) {
+	do := func(w http.ResponseWriter, r *http.Request, href string, payload io.Reader) {
 		req, err := http.NewRequest("PUT", href, payload)
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
@@ -252,12 +251,15 @@ func newHydra(t *testing.T, subject *string, claims *idTokenClaims, scope *[]str
 		require.NoError(t, err)
 		hydra, err := pool.RunWithOptions(&dockertest.RunOptions{
 			Repository: "oryd/hydra",
-			Tag:        "v2.0.2",
+			// Keep tag in sync with the version in ci.yaml
+			Tag: "v2.2.0@sha256:6c0f9195fe04ae16b095417b323881f8c9008837361160502e11587663b37c09",
 			Env: []string{
 				"DSN=memory",
 				fmt.Sprintf("URLS_SELF_ISSUER=http://localhost:%d/", publicPort),
 				"URLS_LOGIN=" + hydraIntegrationTSURL + "/login",
 				"URLS_CONSENT=" + hydraIntegrationTSURL + "/consent",
+				"LOG_LEAK_SENSITIVE_VALUES=true",
+				"SECRETS_SYSTEM=someverylongsecretthatis32byteslong",
 			},
 			Cmd:          []string{"serve", "all", "--dev"},
 			ExposedPorts: []string{"4444/tcp", "4445/tcp"},
@@ -313,10 +315,11 @@ func newOIDCProvider(
 	hydraPublic string,
 	hydraAdmin string,
 	id string,
+	opts ...func(*oidc.Configuration),
 ) oidc.Configuration {
 	clientID, secret := createClient(t, hydraAdmin, kratos.URL+oidc.RouteBase+"/callback/"+id)
 
-	return oidc.Configuration{
+	cfg := oidc.Configuration{
 		Provider:     "generic",
 		ID:           id,
 		ClientID:     clientID,
@@ -324,6 +327,11 @@ func newOIDCProvider(
 		IssuerURL:    hydraPublic + "/",
 		Mapper:       "file://./stub/oidc.hydra.jsonnet",
 	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	return cfg
 }
 
 func viperSetProviderConfig(t *testing.T, conf *config.Config, providers ...oidc.Configuration) {
@@ -370,7 +378,7 @@ func createIdToken(t *testing.T, cl jwt.RegisteredClaims) string {
 	require.NoError(t, json.Unmarshal(rawKey, key))
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, &claims{
 		RegisteredClaims: &cl,
-		Email:            "apple@ory.sh",
+		Email:            "acme@ory.sh",
 	})
 	token.Header["kid"] = key.KeyID
 	s, err := token.SignedString(key.Key)

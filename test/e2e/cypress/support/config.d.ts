@@ -1,4 +1,4 @@
-// Copyright © 2023 Ory Corp
+// Copyright © 2024 Ory Corp
 // SPDX-License-Identifier: Apache-2.0
 
 /* eslint-disable */
@@ -40,11 +40,15 @@ export type WebHookConfiguration =
       can_interrupt?: false
       [k: string]: unknown | undefined
     }
-export type SelfServiceHooks = SelfServiceWebHook[]
+export type SelfServiceHooks = (SelfServiceWebHook | B2BSSOHook)[]
 /**
  * If set to true will enable [User Registration](https://www.ory.sh/kratos/docs/self-service/flows/user-registration/).
  */
 export type EnableUserRegistration = boolean
+/**
+ * When registration fails because an account with the given credentials or addresses previously signed up, provide login hints about available methods to sign in to the user.
+ */
+export type ProvideLoginHintsOnFailedRegistration = boolean
 /**
  * URL where the Registration UI is hosted. Check the [reference implementation](https://github.com/ory/kratos-selfservice-ui-node).
  */
@@ -106,8 +110,12 @@ export type EnablesLinkMethod = boolean
 export type OverrideTheBaseURLWhichShouldBeUsedAsTheBaseForRecoveryAndVerificationLinks =
   string
 export type HowLongALinkIsValidFor = string
-export type EnablesLoginWithCodeMethod = boolean
-export type EnablesRegistrationWithCodeMethod = boolean
+export type EnablesLoginAndRegistrationWithTheCodeMethod = boolean
+export type EnablesLoginFlowsCodeMethodToFulfilMFARequests = boolean
+/**
+ * This setting allows the code method to always login a user with code if they have registered with another authentication method such as password or social sign in.
+ */
+export type PasswordlessLoginFallbackEnabled = boolean
 export type EnablesCodeMethod = boolean
 export type HowLongACodeIsValidFor = string
 export type EnablesUsernameEmailAndPasswordMethod = boolean
@@ -146,22 +154,30 @@ export type EnablesTheWebAuthnMethod = boolean
  * If enabled will have the effect that WebAuthn is used for passwordless flows (as a first factor) and not for multi-factor set ups. With this set to true, users will see an option to sign up with WebAuthn on the registration screen.
  */
 export type UseForPasswordlessFlows = boolean
-/**
- * An name to help the user identify this RP.
- */
-export type RelyingPartyDisplayName = string
-/**
- * The id must be a subset of the domain currently in the browser.
- */
-export type RelyingPartyIdentifier = string
-/**
- * An explicit RP origin. If left empty, this defaults to `id`.
- */
-export type RelyingPartyOrigin = string
-/**
- * An icon to help the user identify this RP.
- */
-export type RelyingPartyIcon = string
+export type RelyingPartyRPConfig =
+  | {
+      origin?: {
+        [k: string]: unknown | undefined
+      }
+      origins?: {
+        [k: string]: unknown | undefined
+      }
+      [k: string]: unknown | undefined
+    }
+  | {
+      origin: string
+      origins?: {
+        [k: string]: unknown | undefined
+      }
+      [k: string]: unknown | undefined
+    }
+  | {
+      origin?: {
+        [k: string]: unknown | undefined
+      }
+      origins: string[]
+      [k: string]: unknown | undefined
+    }
 export type EnablesOpenIDConnectMethod = boolean
 /**
  * Can be used to modify the base URL for OAuth2 Redirect URLs. If unset, the Public Base URL will be used.
@@ -184,6 +200,8 @@ export type SelfServiceOIDCProvider = SelfServiceOIDCProvider1 & {
   apple_private_key_id?: ApplePrivateKeyIdentifier
   apple_private_key?: ApplePrivateKey
   requested_claims?: OpenIDConnectClaims
+  organization_id?: OrganizationID
+  additional_id_token_audiences?: AdditionalClientIdsAllowedWhenUsingIDTokenSubmission
 }
 export type SelfServiceOIDCProvider1 = {
   [k: string]: unknown | undefined
@@ -239,6 +257,11 @@ export type ApplePrivateKeyIdentifier = string
  * Sign In with Apple Private Key needed for generating a JWT token for client secret
  */
 export type ApplePrivateKey = string
+/**
+ * The ID of the organization that this provider belongs to. Only effective in the Ory Network.
+ */
+export type OrganizationID = string
+export type AdditionalClientIdsAllowedWhenUsingIDTokenSubmission = string[]
 /**
  * A list and configuration of OAuth2 and OpenID Connect providers Ory Kratos should integrate with.
  */
@@ -316,6 +339,14 @@ export type AuthMechanisms1 =
   | WebHookAuthApiKeyProperties
   | WebHookAuthBasicAuthProperties
 /**
+ * The channel id. Corresponds to the .via property of the identity schema for recovery, verification, etc. Currently only phone is supported.
+ */
+export type ChannelId = "sms"
+/**
+ * The channel type. Currently only http is supported.
+ */
+export type ChannelType = "http"
+/**
  * If set, the login and registration flows will handle the Ory OAuth 2.0 & OpenID `login_challenge` query parameter to serve as an OpenID Connect Provider. This URL should point to Ory Hydra when you are not running on the Ory Network and be left untouched otherwise.
  */
 export type OAuth20ProviderURL = string
@@ -323,6 +354,10 @@ export type OAuth20ProviderURL = string
  * Override the return_to query parameter with the OAuth2 provider request URL when perfoming an OAuth2 login flow.
  */
 export type PersistOAuth2RequestBetweenFlows = boolean
+/**
+ * The default consistency level to use when reading from the database. Defaults to `strong` to not break existing API contracts. Only set this to `eventual` if you can accept that other read APIs will suddenly return eventually consistent results. It is only effective in Ory Network.
+ */
+export type DefaultReadConsistencyLevel = "strong" | "eventual"
 /**
  * Disable request logging for /health/alive and /health/ready endpoints
  */
@@ -431,6 +466,9 @@ export type HTTPCookiePath = string
  * Sets the session and CSRF cookie SameSite.
  */
 export type HTTPCookieSameSiteConfiguration = "Strict" | "Lax" | "None"
+export type TokenTimeToLive = string
+export type JsonNetMapperURL = string
+export type JSONWebKeySetURL = string
 /**
  * Defines how long a session is active. Once that lifespan has been reached, the user needs to sign in again.
  */
@@ -479,6 +517,14 @@ export type AddExemptURLsToPrivateIPRanges = string[]
  * If enabled allows Ory Sessions to be cached. Only effective in the Ory Network.
  */
 export type EnableOrySessionsCaching = boolean
+/**
+ * If enabled allows new flow transitions using `continue_with` items.
+ */
+export type EnableNewFlowTransitionsUsingContinueWithItems = boolean
+/**
+ * Secifies which organizations are available. Only effective in the Ory Network.
+ */
+export type Organizations = unknown[]
 
 export interface OryKratosConfiguration2 {
   selfservice: {
@@ -500,11 +546,11 @@ export interface OryKratosConfiguration2 {
       }
       registration?: {
         enabled?: EnableUserRegistration
+        login_hints?: ProvideLoginHintsOnFailedRegistration
         ui_url?: RegistrationUIURL
         lifespan?: string
         before?: SelfServiceBeforeRegistration
         after?: SelfServiceAfterRegistration
-        login_hints?: boolean
       }
       login?: {
         ui_url?: LoginUIURL
@@ -527,7 +573,9 @@ export interface OryKratosConfiguration2 {
         config?: LinkConfiguration
       }
       code?: {
-        passwordless_enabled?: boolean
+        passwordless_enabled?: EnablesLoginAndRegistrationWithTheCodeMethod
+        mfa_enabled?: EnablesLoginFlowsCodeMethodToFulfilMFARequests
+        passwordless_login_fallback_enabled?: PasswordlessLoginFallbackEnabled
         enabled?: EnablesCodeMethod
         config?: CodeConfiguration
       }
@@ -553,6 +601,7 @@ export interface OryKratosConfiguration2 {
   dsn: DataSourceName
   courier?: CourierConfiguration
   oauth2_provider?: OAuth2ProviderConfiguration
+  preview?: ConfigurePreviewFeatures
   serve?: {
     admin?: {
       request_log?: {
@@ -670,20 +719,38 @@ export interface OryKratosConfiguration2 {
   config?: string[]
   clients?: GlobalOutgoingNetworkSettings
   feature_flags?: FeatureFlags
+  organizations?: Organizations
 }
 export interface SelfServiceAfterSettings {
   default_browser_return_url?: RedirectBrowsersToSetURLPerDefault
-  password?: SelfServiceAfterSettingsMethod
+  password?: SelfServiceAfterSettingsAuthMethod
+  totp?: SelfServiceAfterSettingsAuthMethod
+  oidc?: SelfServiceAfterSettingsAuthMethod
+  webauthn?: SelfServiceAfterSettingsAuthMethod
+  lookup_secret?: SelfServiceAfterSettingsAuthMethod
   profile?: SelfServiceAfterSettingsMethod
   hooks?: SelfServiceHooks
 }
-export interface SelfServiceAfterSettingsMethod {
+export interface SelfServiceAfterSettingsAuthMethod {
   default_browser_return_url?: RedirectBrowsersToSetURLPerDefault
   hooks?: (SelfServiceWebHook | SelfServiceSessionRevokerHook)[]
 }
 export interface SelfServiceWebHook {
   hook: "web_hook"
   config: WebHookConfiguration
+}
+export interface SelfServiceSessionRevokerHook {
+  hook: "revoke_active_sessions"
+}
+export interface SelfServiceAfterSettingsMethod {
+  default_browser_return_url?: RedirectBrowsersToSetURLPerDefault
+  hooks?: SelfServiceWebHook[]
+}
+export interface B2BSSOHook {
+  hook: "b2b_sso"
+  config: {
+    [k: string]: unknown | undefined
+  }
 }
 export interface SelfServiceBeforeSettings {
   hooks?: SelfServiceHooks
@@ -705,6 +772,7 @@ export interface SelfServiceAfterRegistrationMethod {
     | SelfServiceSessionIssuerHook
     | SelfServiceWebHook
     | SelfServiceShowVerificationUIHook
+    | B2BSSOHook
   )[]
 }
 export interface SelfServiceSessionIssuerHook {
@@ -722,10 +790,13 @@ export interface SelfServiceAfterLogin {
   webauthn?: SelfServiceAfterDefaultLoginMethod
   oidc?: SelfServiceAfterOIDCLoginMethod
   code?: SelfServiceAfterDefaultLoginMethod
+  totp?: SelfServiceAfterDefaultLoginMethod
+  lookup_secret?: SelfServiceAfterDefaultLoginMethod
   hooks?: (
     | SelfServiceWebHook
     | SelfServiceSessionRevokerHook
     | SelfServiceRequireVerifiedAddressHook
+    | B2BSSOHook
   )[]
 }
 export interface SelfServiceAfterDefaultLoginMethod {
@@ -736,9 +807,6 @@ export interface SelfServiceAfterDefaultLoginMethod {
     | SelfServiceWebHook
   )[]
 }
-export interface SelfServiceSessionRevokerHook {
-  hook: "revoke_active_sessions"
-}
 export interface SelfServiceRequireVerifiedAddressHook {
   hook: "require_verified_address"
 }
@@ -748,6 +816,7 @@ export interface SelfServiceAfterOIDCLoginMethod {
     | SelfServiceSessionRevokerHook
     | SelfServiceWebHook
     | SelfServiceRequireVerifiedAddressHook
+    | B2BSSOHook
   )[]
 }
 export interface EmailAndPhoneVerificationAndAccountActivationConfiguration {
@@ -814,13 +883,6 @@ export interface TOTPConfiguration {
 export interface WebAuthnConfiguration {
   passwordless?: UseForPasswordlessFlows
   rp?: RelyingPartyRPConfig
-}
-export interface RelyingPartyRPConfig {
-  display_name: RelyingPartyDisplayName
-  id: RelyingPartyIdentifier
-  origin?: RelyingPartyOrigin
-  icon?: RelyingPartyIcon
-  [k: string]: unknown | undefined
 }
 export interface SpecifyOpenIDConnectAndOAuth2Configuration {
   enabled?: EnablesOpenIDConnectMethod
@@ -893,16 +955,41 @@ export interface CourierConfiguration {
     recovery_code?: CourierTemplates
     verification?: CourierTemplates
     verification_code?: CourierTemplates
+    registration_code?: {
+      valid?: {
+        email: EmailCourierTemplate
+      }
+    }
+    login_code?: {
+      valid?: {
+        email: EmailCourierTemplate
+      }
+    }
   }
   template_override_path?: OverrideMessageTemplates
   /**
    * Defines the maximum number of times the sending of a message is retried after it failed before it is marked as abandoned
    */
   message_retries?: number
+  /**
+   * Configures the dispatch worker.
+   */
+  worker?: {
+    /**
+     * Defines how many messages are pulled from the queue at once.
+     */
+    pull_count?: number
+    /**
+     * Defines how long the worker waits before pulling messages from the queue again.
+     */
+    pull_wait?: string
+    [k: string]: unknown | undefined
+  }
   delivery_strategy?: DeliveryStrategy
   http?: HTTPConfiguration
-  smtp: SMTPConfiguration
+  smtp?: SMTPConfiguration
   sms?: SMSSenderConfiguration
+  channels?: CourierChannelConfiguration[]
 }
 export interface CourierTemplates {
   invalid?: {
@@ -910,6 +997,7 @@ export interface CourierTemplates {
   }
   valid?: {
     email: EmailCourierTemplate
+    sms?: SmsCourierTemplate
   }
 }
 export interface EmailCourierTemplate {
@@ -924,6 +1012,14 @@ export interface EmailCourierTemplate {
     html?: string
   }
   subject?: string
+}
+export interface SmsCourierTemplate {
+  body?: {
+    /**
+     * A template send to the SMS provider.
+     */
+    plaintext?: string
+  }
 }
 /**
  * Configures outgoing emails using HTTP.
@@ -1027,6 +1123,11 @@ export interface SMSSenderConfiguration {
     additionalProperties?: false
   }
 }
+export interface CourierChannelConfiguration {
+  id: ChannelId
+  type?: ChannelType
+  request_config: HttpRequestConfig
+}
 export interface OAuth2ProviderConfiguration {
   url?: OAuth20ProviderURL
   headers?: HTTPRequestHeaders
@@ -1037,6 +1138,10 @@ export interface OAuth2ProviderConfiguration {
  */
 export interface HTTPRequestHeaders {
   [k: string]: string | undefined
+}
+export interface ConfigurePreviewFeatures {
+  default_read_consistency_level?: DefaultReadConsistencyLevel
+  [k: string]: unknown | undefined
 }
 /**
  * Sets the permissions of the unix socket
@@ -1078,6 +1183,10 @@ export interface OryTracingConfig {
    * Specifies the service name to use on the tracer.
    */
   service_name?: string
+  /**
+   * Specifies the deployment environment to use on the tracer.
+   */
+  deployment_environment?: string
   providers?: {
     /**
      * Configures the jaeger tracing backend.
@@ -1141,6 +1250,7 @@ export interface OryTracingConfig {
          */
         sampling_ratio?: number
       }
+      authorization_header?: string
     }
   }
 }
@@ -1224,6 +1334,29 @@ export interface HTTPCookieConfiguration {
  */
 export interface WhoAmIToSessionSettings {
   required_aal?: RequiredAuthenticatorAssuranceLevel
+  tokenizer?: TokenizerConfiguration
+}
+/**
+ * Configure the tokenizer, responsible for converting a session into a token format such as JWT.
+ */
+export interface TokenizerConfiguration {
+  templates?: TokenizerTemplates
+  [k: string]: unknown | undefined
+}
+/**
+ * A list of different templates that govern how a session is converted to a token format.
+ */
+export interface TokenizerTemplates {
+  /**
+   * This interface was referenced by `TokenizerTemplates`'s JSON-Schema definition
+   * via the `patternProperty` "[a-zA-Z0-9-_.]+".
+   */
+  [k: string]: {
+    ttl?: TokenTimeToLive
+    claims_mapper_url?: JsonNetMapperURL
+    jwks_url: JSONWebKeySetURL
+    [k: string]: unknown | undefined
+  }
 }
 /**
  * Configure how outgoing network calls behave.
@@ -1242,4 +1375,5 @@ export interface GlobalHTTPClientConfiguration {
 }
 export interface FeatureFlags {
   cacheable_sessions?: EnableOrySessionsCaching
+  use_continue_with_transitions?: EnableNewFlowTransitionsUsingContinueWithItems
 }

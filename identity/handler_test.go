@@ -339,6 +339,34 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("suite=create and batch list", func(t *testing.T) {
+		var ids []uuid.UUID
+		identitiesAmount := 5
+		listAmount := 3
+		t.Run("case= create multiple identities", func(t *testing.T) {
+			for i := 0; i < identitiesAmount; i++ {
+				res := send(t, adminTS, "POST", "/identities", http.StatusCreated, json.RawMessage(`{"traits": {"bar":"baz"}}`))
+				assert.NotEmpty(t, res.Get("id").String(), "%s", res.Raw)
+
+				id := x.ParseUUID(res.Get("id").String())
+				ids = append(ids, id)
+			}
+			require.Equal(t, len(ids), identitiesAmount)
+		})
+
+		t.Run("case= list few identities", func(t *testing.T) {
+			url := "/identities?ids=" + ids[0].String()
+			for i := 1; i < listAmount; i++ {
+				url += "&ids=" + ids[i].String()
+			}
+			res := get(t, adminTS, url, 200)
+
+			identities := res.Array()
+			require.Equal(t, len(identities), listAmount)
+		})
+
+	})
+
 	t.Run("suite=create and update", func(t *testing.T) {
 		var i identity.Identity
 		createOidcIdentity := func(t *testing.T, identifier, accessToken, refreshToken, idToken string, encrypt bool) string {
@@ -438,29 +466,47 @@ func TestHandler(t *testing.T) {
 		})
 
 		t.Run("case=should be able to lookup the identity using identifier", func(t *testing.T) {
-			i1 := &identity.Identity{
+			ident := &identity.Identity{
 				Credentials: map[identity.CredentialsType]identity.Credentials{
 					identity.CredentialsTypePassword: {
 						Type:        identity.CredentialsTypePassword,
 						Identifiers: []string{"find.by.identifier@bar.com"},
 						Config:      sqlxx.JSONRawMessage(`{"hashed_password":"$2a$08$.cOYmAd.vCpDOoiVJrO5B.hjTLKQQ6cAK40u8uB.FnZDyPvVvQ9Q."}`), // foobar
 					},
+					identity.CredentialsTypeOIDC: {
+						Type:        identity.CredentialsTypeOIDC,
+						Identifiers: []string{"ProviderID:293b5d9b-1009-4600-a3e9-bd1845de22f2"},
+						Config:      sqlxx.JSONRawMessage("{\"some\" : \"secret\"}"),
+					},
 				},
 				State:  identity.StateActive,
 				Traits: identity.Traits(`{"username":"find.by.identifier@bar.com"}`),
 			}
+			require.NoError(t, reg.PrivilegedIdentityPool().CreateIdentity(context.Background(), ident))
 
-			require.NoError(t, reg.PrivilegedIdentityPool().CreateIdentity(context.Background(), i1))
+			t.Run("type=password", func(t *testing.T) {
+				res := get(t, adminTS, "/identities?credentials_identifier=FIND.BY.IDENTIFIER@bar.com", http.StatusOK)
+				assert.EqualValues(t, ident.ID.String(), res.Get("0.id").String(), "%s", res.Raw)
+				assert.EqualValues(t, "find.by.identifier@bar.com", res.Get("0.traits.username").String(), "%s", res.Raw)
+				assert.EqualValues(t, defaultSchemaExternalURL, res.Get("0.schema_url").String(), "%s", res.Raw)
+				assert.EqualValues(t, config.DefaultIdentityTraitsSchemaID, res.Get("0.schema_id").String(), "%s", res.Raw)
+				assert.EqualValues(t, identity.StateActive, res.Get("0.state").String(), "%s", res.Raw)
+				assert.EqualValues(t, "password", res.Get("0.credentials.password.type").String(), res.Raw)
+				assert.EqualValues(t, "1", res.Get("0.credentials.password.identifiers.#").String(), res.Raw)
+				assert.EqualValues(t, "find.by.identifier@bar.com", res.Get("0.credentials.password.identifiers.0").String(), res.Raw)
+			})
 
-			res := get(t, adminTS, "/identities?credentials_identifier=find.by.identifier@bar.com", http.StatusOK)
-			assert.EqualValues(t, i1.ID.String(), res.Get("0.id").String(), "%s", res.Raw)
-			assert.EqualValues(t, "find.by.identifier@bar.com", res.Get("0.traits.username").String(), "%s", res.Raw)
-			assert.EqualValues(t, defaultSchemaExternalURL, res.Get("0.schema_url").String(), "%s", res.Raw)
-			assert.EqualValues(t, config.DefaultIdentityTraitsSchemaID, res.Get("0.schema_id").String(), "%s", res.Raw)
-			assert.EqualValues(t, identity.StateActive, res.Get("0.state").String(), "%s", res.Raw)
-			assert.EqualValues(t, "password", res.Get("0.credentials.password.type").String(), res.Raw)
-			assert.EqualValues(t, "1", res.Get("0.credentials.password.identifiers.#").String(), res.Raw)
-			assert.EqualValues(t, "find.by.identifier@bar.com", res.Get("0.credentials.password.identifiers.0").String(), res.Raw)
+			t.Run("type=oidc", func(t *testing.T) {
+				res := get(t, adminTS, "/identities?credentials_identifier=ProviderID:293b5d9b-1009-4600-a3e9-bd1845de22f2", http.StatusOK)
+				assert.EqualValues(t, ident.ID.String(), res.Get("0.id").String(), "%s", res.Raw)
+				assert.EqualValues(t, "find.by.identifier@bar.com", res.Get("0.traits.username").String(), "%s", res.Raw)
+				assert.EqualValues(t, defaultSchemaExternalURL, res.Get("0.schema_url").String(), "%s", res.Raw)
+				assert.EqualValues(t, config.DefaultIdentityTraitsSchemaID, res.Get("0.schema_id").String(), "%s", res.Raw)
+				assert.EqualValues(t, identity.StateActive, res.Get("0.state").String(), "%s", res.Raw)
+				assert.EqualValues(t, "oidc", res.Get("0.credentials.oidc.type").String(), res.Raw)
+				assert.EqualValues(t, "1", res.Get("0.credentials.oidc.identifiers.#").String(), res.Raw)
+				assert.EqualValues(t, "ProviderID:293b5d9b-1009-4600-a3e9-bd1845de22f2", res.Get("0.credentials.oidc.identifiers.0").String(), res.Raw)
+			})
 		})
 
 		t.Run("case=should get oidc credential", func(t *testing.T) {
@@ -1256,13 +1302,34 @@ func TestHandler(t *testing.T) {
 	})
 
 	t.Run("case=should list all identities", func(t *testing.T) {
-		for name, ts := range map[string]*httptest.Server{"public": publicTS, "admin": adminTS} {
+		for name, ts := range map[string]*httptest.Server{"admin": adminTS} {
 			t.Run("endpoint="+name, func(t *testing.T) {
 				res := get(t, ts, "/identities", http.StatusOK)
 				assert.False(t, res.Get("0.credentials").Exists(), "credentials config should be omitted: %s", res.Raw)
 				assert.True(t, res.Get("0.metadata_public").Exists(), "metadata_public config should be included: %s", res.Raw)
 				assert.True(t, res.Get("0.metadata_admin").Exists(), "metadata_admin config should be included: %s", res.Raw)
 				assert.EqualValues(t, "baz", res.Get(`#(traits.bar=="baz").traits.bar`).String(), "%s", res.Raw)
+			})
+		}
+	})
+
+	t.Run("case=should list all identities with credentials", func(t *testing.T) {
+		for name, ts := range map[string]*httptest.Server{"admin": adminTS} {
+			t.Run("endpoint="+name, func(t *testing.T) {
+				res := get(t, ts, "/identities?include_credential=totp", http.StatusOK)
+				assert.True(t, res.Get("0.credentials").Exists(), "credentials config should be included: %s", res.Raw)
+				assert.True(t, res.Get("0.metadata_public").Exists(), "metadata_public config should be included: %s", res.Raw)
+				assert.True(t, res.Get("0.metadata_admin").Exists(), "metadata_admin config should be included: %s", res.Raw)
+				assert.EqualValues(t, "baz", res.Get(`#(traits.bar=="baz").traits.bar`).String(), "%s", res.Raw)
+			})
+		}
+	})
+
+	t.Run("case=should not be able to list all identities with credentials due to wrong credentials type", func(t *testing.T) {
+		for name, ts := range map[string]*httptest.Server{"admin": adminTS} {
+			t.Run("endpoint="+name, func(t *testing.T) {
+				res := get(t, ts, "/identities?include_credential=XYZ", http.StatusBadRequest)
+				assert.Contains(t, res.Get("error.message").String(), "The request was malformed or contained invalid parameters", "%s", res.Raw)
 			})
 		}
 	})

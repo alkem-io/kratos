@@ -13,7 +13,11 @@ docs/AuthenticatorAssuranceLevel.md
 docs/BatchPatchIdentitiesResponse.md
 docs/ConsistencyRequestParameters.md
 docs/ContinueWith.md
+docs/ContinueWithRecoveryUi.md
+docs/ContinueWithRecoveryUiFlow.md
 docs/ContinueWithSetOrySessionToken.md
+docs/ContinueWithSettingsUi.md
+docs/ContinueWithSettingsUiFlow.md
 docs/ContinueWithVerificationUi.md
 docs/ContinueWithVerificationUiFlow.md
 docs/CourierApi.md
@@ -40,11 +44,9 @@ docs/IdentityCredentialsCode.md
 docs/IdentityCredentialsOidc.md
 docs/IdentityCredentialsOidcProvider.md
 docs/IdentityCredentialsPassword.md
-docs/IdentityCredentialsType.md
 docs/IdentityPatch.md
 docs/IdentityPatchResponse.md
 docs/IdentitySchemaContainer.md
-docs/IdentityState.md
 docs/IdentityWithCredentials.md
 docs/IdentityWithCredentialsOidc.md
 docs/IdentityWithCredentialsOidcConfig.md
@@ -131,7 +133,11 @@ model_authenticator_assurance_level.go
 model_batch_patch_identities_response.go
 model_consistency_request_parameters.go
 model_continue_with.go
+model_continue_with_recovery_ui.go
+model_continue_with_recovery_ui_flow.go
 model_continue_with_set_ory_session_token.go
+model_continue_with_settings_ui.go
+model_continue_with_settings_ui_flow.go
 model_continue_with_verification_ui.go
 model_continue_with_verification_ui_flow.go
 model_courier_message_status.go
@@ -155,11 +161,9 @@ model_identity_credentials_code.go
 model_identity_credentials_oidc.go
 model_identity_credentials_oidc_provider.go
 model_identity_credentials_password.go
-model_identity_credentials_type.go
 model_identity_patch.go
 model_identity_patch_response.go
 model_identity_schema_container.go
-model_identity_state.go
 model_identity_with_credentials.go
 model_identity_with_credentials_oidc.go
 model_identity_with_credentials_oidc_config.go

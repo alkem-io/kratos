@@ -138,6 +138,13 @@ type listIdentitiesResponse struct {
 type listIdentitiesParameters struct {
 	migrationpagination.RequestParameters
 
+	// List of ids used to filter identities.
+	// If this list is empty, then no filter will be applied.
+	//
+	// required: false
+	// in: query
+	IdsFilter []string `json:"ids"`
+
 	// CredentialsIdentifier is the identifier (username, email) of the credentials to look up using exact match.
 	// Only one of CredentialsIdentifier and CredentialsIdentifierSimilar can be used.
 	//
@@ -154,6 +161,15 @@ type listIdentitiesParameters struct {
 	// required: false
 	// in: query
 	CredentialsIdentifierSimilar string `json:"preview_credentials_identifier_similar"`
+
+	// Include Credentials in Response
+	//
+	// Include any credential, for example `password` or `oidc`, in the response. When set to `oidc`, This will return
+	// the initial OAuth 2.0 Access Token, OAuth 2.0 Refresh Token and the OpenID Connect ID Token if available.
+	//
+	// required: false
+	// in: query
+	DeclassifyCredentials []string `json:"include_credential"`
 
 	crdbx.ConsistencyRequestParameters
 }
@@ -176,20 +192,34 @@ type listIdentitiesParameters struct {
 //	  200: listIdentities
 //	  default: errorGeneric
 func (h *Handler) list(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	includeCredentials := r.URL.Query()["include_credential"]
+	var declassify []CredentialsType
+	for _, v := range includeCredentials {
+		tc, ok := ParseCredentialsType(v)
+		if ok {
+			declassify = append(declassify, tc)
+		} else {
+			h.r.Writer().WriteError(w, r, errors.WithStack(herodot.ErrBadRequest.WithReasonf("Invalid value `%s` for parameter `include_credential`.", declassify)))
+			return
+		}
+	}
+
 	var (
 		err    error
 		params = ListIdentityParameters{
 			Expand:                       ExpandDefault,
+			IdsFilter:                    r.URL.Query()["ids"],
 			CredentialsIdentifier:        r.URL.Query().Get("credentials_identifier"),
 			CredentialsIdentifierSimilar: r.URL.Query().Get("preview_credentials_identifier_similar"),
 			ConsistencyLevel:             crdbx.ConsistencyLevelFromRequest(r),
+			DeclassifyCredentials:        declassify,
 		}
 	)
 	if params.CredentialsIdentifier != "" && params.CredentialsIdentifierSimilar != "" {
 		h.r.Writer().WriteError(w, r, herodot.ErrBadRequest.WithReason("Cannot pass both credentials_identifier and preview_credentials_identifier_similar."))
 		return
 	}
-	if params.CredentialsIdentifier != "" || params.CredentialsIdentifierSimilar != "" {
+	if params.CredentialsIdentifier != "" || params.CredentialsIdentifierSimilar != "" || len(params.DeclassifyCredentials) > 0 {
 		params.Expand = ExpandEverything
 	}
 	params.KeySetPagination, params.PagePagination, err = x.ParseKeysetOrPagePagination(r)
@@ -223,7 +253,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, _ httprouter.Para
 	// Identities using the marshaler for including metadata_admin
 	isam := make([]WithCredentialsMetadataAndAdminMetadataInJSON, len(is))
 	for i, identity := range is {
-		isam[i] = WithCredentialsMetadataAndAdminMetadataInJSON(identity)
+		emit, err := identity.WithDeclassifiedCredentials(r.Context(), h.r, params.DeclassifyCredentials)
+		if err != nil {
+			h.r.Writer().WriteError(w, r, err)
+			return
+		}
+
+		isam[i] = WithCredentialsMetadataAndAdminMetadataInJSON(*emit)
 	}
 
 	h.r.Writer().Write(w, r, isam)
@@ -249,7 +285,7 @@ type getIdentity struct {
 	//
 	// required: false
 	// in: query
-	DeclassifyCredentials []string `json:"include_credential"`
+	DeclassifyCredentials []CredentialsType `json:"include_credential"`
 }
 
 // swagger:route GET /admin/identities/{id} identity getIdentity
@@ -924,13 +960,11 @@ type deleteIdentityCredentials struct {
 	// in: path
 	ID string `json:"id"`
 
-	// Type is the credential's Type.
-	// One of totp, webauthn, lookup
+	// Type is the type of credentials to be deleted.
 	//
-	// enum: totp,webauthn,lookup
 	// required: true
 	// in: path
-	Type string `json:"type"`
+	Type CredentialsType `json:"type"`
 }
 
 // swagger:route DELETE /admin/identities/{id}/credentials/{type} identity deleteIdentityCredentials
@@ -969,9 +1003,7 @@ func (h *Handler) deleteIdentityCredentials(w http.ResponseWriter, r *http.Reque
 	}
 
 	switch cred.Type {
-	case CredentialsTypeLookup:
-		fallthrough
-	case CredentialsTypeTOTP:
+	case CredentialsTypeLookup, CredentialsTypeTOTP:
 		identity.DeleteCredentialsType(cred.Type)
 	case CredentialsTypeWebAuthn:
 		identity, err = deletCredentialWebAuthFromIdentity(identity)
@@ -979,9 +1011,7 @@ func (h *Handler) deleteIdentityCredentials(w http.ResponseWriter, r *http.Reque
 			h.r.Writer().WriteError(w, r, err)
 			return
 		}
-	case CredentialsTypeOIDC:
-		fallthrough
-	case CredentialsTypePassword:
+	case CredentialsTypeOIDC, CredentialsTypePassword, CredentialsTypeCodeAuth:
 		h.r.Writer().WriteError(w, r, errors.WithStack(herodot.ErrBadRequest.WithReasonf("You can't remove first factor credentials.")))
 		return
 	default:
